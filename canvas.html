@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Pan/Zoom Canvas</title>
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      overflow: hidden;
+    }
+    #app {
+      width: 100%;
+      height: 100%;
+      touch-action: none; /* needed for touch gestures */
+    }
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      background: #2c2c34;
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <canvas ref="canvas"></canvas>
+  </div>
+
+  <!-- Vue 3 CDN -->
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <script>
+    const { createApp, onMounted, reactive } = Vue;
+
+    class DraggableImage {
+      constructor(x, y, width, height, tileSize = 256, maxZoomLevel = 8) {
+        this.x = x;
+        this.y = y;
+        this.scale = 1;
+        this.width = width;
+        this.height = height;
+        this.tileSize = tileSize;
+        this.maxZoomLevel = maxZoomLevel;
+        
+        this.isDragging = false;
+        this.dragLastX = 0;
+        this.dragLastY = 0;
+        
+        this.tiles = new Map();
+        this.visibleTiles = [];
+      }
+
+      containsPoint(px, py) {
+        return px >= this.x && px <= this.x + this.width * this.scale &&
+               py >= this.y && py <= this.y + this.height * this.scale;
+      }
+
+      draw(ctx) {
+        ctx.save();
+        ctx.fillStyle = 'rgba(100, 100, 150, 0.3)';
+        ctx.fillRect(this.x, this.y, this.width * this.scale, this.height * this.scale);
+        
+        ctx.strokeStyle = '#4a9eff';
+        ctx.lineWidth = 2 / ctx.canvas.width; // scale-aware line width
+        ctx.strokeRect(this.x, this.y, this.width * this.scale, this.height * this.scale);
+        
+        ctx.fillStyle = '#aaa';
+        ctx.font = '14px monospace';
+        ctx.fillText(`${(this.scale * 100).toFixed(0)}%`, this.x + 5, this.y + 20);
+        ctx.restore();
+      }
+    }
+
+    createApp({
+      setup() {
+        const state = reactive({
+          offsetX: 0,
+          offsetY: 0,
+          scale: 1,
+          isDragging: false,
+          lastX: 0,
+          lastY: 0,
+          pointers: {},
+          pinchStartDistance: 0,
+          pinchStartScale: 1,
+          draggableImages: [
+            new DraggableImage(20, 50, 100, 100),
+            new DraggableImage(200, 150, 400, 300),
+            new DraggableImage(300, 200, 1000, 700),
+          ],
+          activeDraggableImage: null
+        });
+
+        let canvas, ctx;
+        
+        function draw() {
+          ctx.setTransform(1, 0, 0, 1, 0, 0); // reset
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+          // Apply pan & zoom
+          ctx.setTransform(state.scale, 0, 0, state.scale, state.offsetX, state.offsetY);
+
+          // Example content
+          ctx.fillStyle = 'red';
+          ctx.fillRect(100, 100, 200, 200);
+          ctx.fillStyle = 'blue';
+          ctx.fillRect(400, 200, 150, 150);
+
+          // Draw draggable images
+          state.draggableImages.forEach(img => img.draw(ctx));
+        }
+
+
+        function getPointerDistance(p1, p2) {
+          return Math.hypot(p2.x - p1.x, p2.y - p1.y);
+        }
+
+        function screenToCanvasCoords(screenX, screenY) {
+          const rect = canvas.getBoundingClientRect();
+          let sx = (screenX - rect.left) / state.scale - state.offsetX / state.scale;
+          let sy = (screenY - rect.top) / state.scale - state.offsetY / state.scale;
+          // sx *= devicePixelRatio
+          // sy *= devicePixelRatio
+          return { sx, sy };
+        }
+
+        onMounted(() => {
+          canvas = document.querySelector('canvas');
+          ctx = canvas.getContext('2d');
+
+          // handle high-DPI screens
+          const resize = () => {
+            canvas.width = canvas.clientWidth
+            canvas.height = canvas.clientHeight
+
+            const USE_HIGH_DPI = false
+
+            if (USE_HIGH_DPI) {
+              // TODO: Implementing Retina support will require tracking down every e.clientX and Y
+              canvas.width *= devicePixelRatio;
+              canvas.height *= devicePixelRatio;
+              ctx.scale(devicePixelRatio, devicePixelRatio);
+            }
+            draw();
+          };
+          window.addEventListener('resize', resize);
+          resize();
+
+          // Mouse drag
+          canvas.addEventListener('mousedown', e => {
+            const { sx, sy } = screenToCanvasCoords(e.clientX, e.clientY);
+            console.log(sx, sy, e.clientX, e.clientY)
+            // Check if clicking on a draggable image
+            let hitImage = null;
+            for (let img of state.draggableImages) {
+              if (img.containsPoint(sx, sy)) {
+                hitImage = img;
+                break;
+              }
+            }
+            
+            if (hitImage) {
+              state.activeDraggableImage = hitImage;
+              hitImage.isDragging = true;
+              hitImage.dragLastX = e.clientX;
+              hitImage.dragLastY = e.clientY;
+            } else {
+              // state.isDragging = true;
+              // state.lastX = e.clientX;
+              // state.lastY = e.clientY;
+            }
+          });
+
+          canvas.addEventListener('mousemove', e => {
+            // console.log('mousemove')
+            if (state.activeDraggableImage) {
+              const dx = e.clientX - state.activeDraggableImage.dragLastX;
+              const dy = e.clientY - state.activeDraggableImage.dragLastY;
+              state.activeDraggableImage.x += dx / state.scale;
+              state.activeDraggableImage.y += dy / state.scale;
+              state.activeDraggableImage.dragLastX = e.clientX;
+              state.activeDraggableImage.dragLastY = e.clientY;
+              draw();
+            } else if (state.isDragging) {
+              // const dx = e.clientX - state.lastX;
+              // const dy = e.clientY - state.lastY;
+              // state.offsetX += dx;
+              // state.offsetY += dy;
+              // state.lastX = e.clientX;
+              // state.lastY = e.clientY;
+              // draw();
+            }
+          });
+
+          canvas.addEventListener('mouseup', () => {
+            state.isDragging = false;
+            if (state.activeDraggableImage) {
+              state.activeDraggableImage.isDragging = false;
+              state.activeDraggableImage = null;
+            }
+          });
+          canvas.addEventListener('mouseleave', () => {
+            state.isDragging = false;
+            if (state.activeDraggableImage) {
+              state.activeDraggableImage.isDragging = false;
+              state.activeDraggableImage = null;
+            }
+          });
+
+          // CTRL + wheel zoom
+          canvas.addEventListener('wheel', e => {
+            e.preventDefault();
+
+            // wheel + ctrl = zoom
+            if (e.ctrlKey){
+              const zoomIntensity = 0.017;
+              const delta = e.deltaY * -zoomIntensity;
+              const newScale = Math.max(0.1, state.scale * (1 + delta));
+
+              const rect = canvas.getBoundingClientRect();
+              const mx = e.clientX - rect.left;
+              const my = e.clientY - rect.top;
+              state.offsetX -= (mx - state.offsetX) * (newScale / state.scale - 1);
+              state.offsetY -= (my - state.offsetY) * (newScale / state.scale - 1);
+
+              state.scale = newScale;
+              draw();
+
+            // wheel - ctrl = pan/scroll
+            } else {
+              const panIntensity = 2.3;
+              const dx = e.deltaX * -panIntensity
+              const dy = e.deltaY * -panIntensity
+
+              state.offsetX += dx;
+              state.offsetY += dy;
+              draw();
+            }
+          }, { passive: false });
+
+          // Pointer events for pinch / touchpad
+          canvas.addEventListener('pointerdown', e => {
+            state.pointers[e.pointerId] = e;
+            if (Object.keys(state.pointers).length === 2) {
+              const [p1, p2] = Object.values(state.pointers);
+              state.pinchStartDistance = getPointerDistance(p1, p2);
+              state.pinchStartScale = state.scale;
+            }
+          });
+
+          canvas.addEventListener('pointermove', e => {
+            if (!(e.pointerId in state.pointers)) return;
+            state.pointers[e.pointerId] = e;
+
+            if (Object.keys(state.pointers).length === 2) {
+              const [p1, p2] = Object.values(state.pointers);
+              const newDistance = getPointerDistance(p1, p2);
+              state.scale = state.pinchStartScale * (newDistance / state.pinchStartDistance);
+              draw();
+            } else if (state.isDragging) {
+              // const dx = e.clientX - state.lastX;
+              // const dy = e.clientY - state.lastY;
+              // state.offsetX += dx;
+              // state.offsetY += dy;
+              // state.lastX = e.clientX;
+              // state.lastY = e.clientY;
+              // draw();
+            }
+          });
+
+          canvas.addEventListener('pointerup', e => delete state.pointers[e.pointerId]);
+          canvas.addEventListener('pointercancel', e => delete state.pointers[e.pointerId]);
+        });
+
+        return {};
+      }
+    }).mount('#app');
+  </script>
+</body>
+</html>

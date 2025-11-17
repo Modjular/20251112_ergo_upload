@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Mouse & Trackpad Event Debugger</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      margin: 20px;
+    }
+    #log {
+      white-space: pre-wrap;
+      font-family: monospace;
+      border: 1px solid #ccc;
+      padding: 10px;
+      height: 400px;
+      overflow-y: scroll;
+    }
+  </style>
+</head>
+<body>
+  <h2>Mouse / Trackpad Event Debugger</h2>
+  <p>Move, click, scroll, pinch-zoom, and press modifier keys.</p>
+  <div id="log"></div>
+
+  <script>
+    const logEl = document.getElementById("log");
+
+    function log(event, details) {
+      const ts = new Date().toISOString();
+      logEl.textContent =
+        `${ts}  ${event}\n${details}\n\n` + logEl.textContent;
+    }
+
+    function mods(e) {
+      return `ctrl=${e.ctrlKey}, shift=${e.shiftKey}, alt=${e.altKey}, meta=${e.metaKey}`;
+    }
+
+    window.addEventListener("pointerdown", e => {
+      log("pointerdown", `button=${e.button}, buttons=${e.buttons}, pointerType=${e.pointerType}, ${mods(e)}`);
+    });
+
+    window.addEventListener("pointerup", e => {
+      log("pointerup", `button=${e.button}, buttons=${e.buttons}, pointerType=${e.pointerType}, ${mods(e)}`);
+    });
+
+    window.addEventListener("pointermove", e => {
+      log("pointermove", `x=${e.clientX}, y=${e.clientY}, buttons=${e.buttons}, pointerType=${e.pointerType}, ${mods(e)}`);
+    });
+
+    window.addEventListener("mousedown", e => {
+      log("mousedown", `button=${e.button}, buttons=${e.buttons}, ${mods(e)}`);
+    });
+
+    window.addEventListener("mouseup", e => {
+      log("mouseup", `button=${e.button}, buttons=${e.buttons}, ${mods(e)}`);
+    });
+
+    window.addEventListener("mousemove", e => {
+      log("mousemove", `x=${e.clientX}, y=${e.clientY}, buttons=${e.buttons}, ${mods(e)}`);
+    });
+
+    window.addEventListener("wheel", e => {
+      log("wheel", `deltaX=${e.deltaX}, deltaY=${e.deltaY}, deltaZ=${e.deltaZ}, deltaMode=${e.deltaMode}, ${mods(e)}`);
+    });
+
+    window.addEventListener("keydown", e => {
+      log("keydown", `key='${e.key}', code='${e.code}', ${mods(e)}`);
+    });
+
+    window.addEventListener("keyup", e => {
+      log("keyup", `key='${e.key}', code='${e.code}', ${mods(e)}`);
+    });
+  </script>
+</body>
+</html>

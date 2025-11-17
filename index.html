@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Resumable Upload Demo</title>
+<style>
+  body { font-family: sans-serif; max-width: 600px; margin: 2em auto; }
+  #progress { width: 100%; background: #eee; height: 24px; border-radius: 8px; overflow: hidden; }
+  #bar { height: 100%; background: #4caf50; width: 0%; transition: width 0.2s; }
+</style>
+</head>
+<body>
+<h2>File Upload with ETA + Resume</h2>
+<input type="file" id="fileInput" /><br /><br />
+<button id="startBtn">Upload</button>
+<div id="progress"><div id="bar"></div></div>
+<p id="status"></p>
+
+<script>
+const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB
+
+async function measureUploadSpeed() {
+  const data = new Blob([new Uint8Array(3 * 1024 * 1024)]); // 3MB dummy
+  const start = performance.now();
+  await fetch("/speedtest", { method: "POST", body: data });
+  const duration = (performance.now() - start) / 1000;
+  return data.size / duration; // bytes/sec
+}
+
+async function uploadFile(file) {
+  const speed = await measureUploadSpeed();
+  console.log(`Measured upload speed: ${(speed / 1e6).toFixed(2)} MB/s`);
+
+  const initRes = await fetch("/upload/init", { method: "POST" });
+  const { session_id } = await initRes.json();
+
+  const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+  let uploadedBytes = 0;
+
+  for (let part = 0; part < totalChunks; part++) {
+    const start = part * CHUNK_SIZE;
+    const end = Math.min(start + CHUNK_SIZE, file.size);
+    const chunk = file.slice(start, end);
+
+    const formData = new FormData();
+    formData.append("chunk", chunk);
+
+    await fetch(`/upload/${session_id}?part=${part}`, {
+      method: "PUT",
+      body: formData,
+    });
+
+    uploadedBytes += chunk.size;
+    const pct = ((uploadedBytes / file.size) * 100).toFixed(1);
+    const remainingBytes = file.size - uploadedBytes;
+    const etaSec = remainingBytes / speed;
+    const bar = document.getElementById("bar");
+    const status = document.getElementById("status");
+    bar.style.width = pct + "%";
+    status.textContent = `Uploaded ${pct}% | ETA: ${etaSec.toFixed(1)}s | Speed: ${(speed / 1e6).toFixed(2)} MB/s`;
+  }
+
+  const complete = await fetch(`/upload/${session_id}/complete?filename=${encodeURIComponent(file.name)}`, { method: "POST" });
+  const result = await complete.json();
+  document.getElementById("status").textContent = "Upload complete: " + result.file;
+}
+
+document.getElementById("startBtn").addEventListener("click", async () => {
+  const file = document.getElementById("fileInput").files[0];
+  if (!file) return alert("Please select a file first");
+  uploadFile(file);
+});
+</script>
+</body>
+</html>

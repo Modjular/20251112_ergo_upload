@@ -142,15 +142,30 @@
           window.addEventListener('resize', resize);
           resize();
 
+          // Prevent the context menu from popping up
+          canvas.addEventListener('contextmenu', e => {
+            e.preventDefault();
+          });
+
           // Mouse drag
           canvas.addEventListener('mousedown', e => {
             const { sx, sy } = screenToCanvasCoords(e.clientX, e.clientY);
 
+            // Only allow mouse drag with middle click
+            if (e.button == 1 && e.buttons == 4) {
+              state.isDragging = true;
+              state.lastX = e.clientX;
+              state.lastY = e.clientY;
+              return
+            }
+
             let hitImage = null;
-            for (let img of state.draggableImages) {
-              if (img.containsPoint(sx, sy)) {
-                hitImage = img;
-                break;
+            if (e.button == 0 && e.buttons == 1) {
+              for (let img of state.draggableImages) {
+                if (img.containsPoint(sx, sy)) {
+                  hitImage = img;
+                  break;
+                }
               }
             }
 
@@ -163,6 +178,16 @@
           });
 
           canvas.addEventListener('mousemove', e => {
+            if (e.button == 0 && e.buttons == 4) {
+              const dx = e.clientX - state.lastX;
+              const dy = e.clientY - state.lastY;
+              state.offsetX += dx;
+              state.offsetY += dy;
+              state.lastX = e.clientX;
+              state.lastY = e.clientY;
+              draw();
+            }
+
             if (state.activeDraggableImage) {
               const dx = e.clientX - state.activeDraggableImage.dragLastX;
               const dy = e.clientY - state.activeDraggableImage.dragLastY;

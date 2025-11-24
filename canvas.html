@@ -55,8 +55,96 @@
                py >= this.y && py <= this.y + this.height * this.scale;
       }
 
-      draw(ctx) {
+      // Determine which zoom level to use based on current scale
+      getZoomLevel() {
+        const level = Math.floor(Math.log2(1 / this.scale));
+        return Math.min(Math.max(level, 0), this.maxZoomLevel);
+      }
+
+      computeVisibleTiles(ctx, state) {
+        // 1. Combined zoom
+        const worldScale = state.scale * this.scale;
+
+        // Determine which LOD to use
+        let level = Math.floor(Math.log2(1 / worldScale));
+        level = Math.min(Math.max(level, 0), this.maxZoomLevel);
+        
+        const effectiveTileSize = this.tileSize * Math.pow(2, level);
+        console.log('level', level, effectiveTileSize)
+
+        // 2. Convert the viewport from screen → world → image space
+        // Screen rect: (0,0) → (canvas.width, canvas.height)
+        const sx0 = 0;
+        const sy0 = 0;
+        const sx1 = ctx.canvas.width;
+        const sy1 = ctx.canvas.height;
+
+        // Screen → World
+        const wx0 = (sx0 - state.offsetX) / state.scale;
+        const wy0 = (sy0 - state.offsetY) / state.scale;
+        const wx1 = (sx1 - state.offsetX) / state.scale;
+        const wy1 = (sy1 - state.offsetY) / state.scale;
+
+        // World → Image space
+        const ix0 = (wx0 - this.x) / this.scale;
+        const iy0 = (wy0 - this.y) / this.scale;
+        const ix1 = (wx1 - this.x) / this.scale;
+        const iy1 = (wy1 - this.y) / this.scale;
+
+        // 3. Clamp to image boundaries
+        const cx0 = Math.max(0, ix0);
+        const cy0 = Math.max(0, iy0);
+        const cx1 = Math.min(this.width, ix1);
+        const cy1 = Math.min(this.height, iy1);
+
+        // 4. Tile index ranges
+        const tx0 = Math.floor(cx0 / effectiveTileSize);
+        const ty0 = Math.floor(cy0 / effectiveTileSize);
+        const tx1 = Math.floor(cx1 / effectiveTileSize);
+        const ty1 = Math.floor(cy1 / effectiveTileSize);
+
+        const tiles = [];
+        for (let ty = ty0; ty <= ty1; ty++) {
+          for (let tx = tx0; tx <= tx1; tx++) {
+            tiles.push({ tx, ty, level, tileSize: effectiveTileSize });
+          }
+        }
+
+        this.visibleTiles = tiles;
+        return tiles;
+      }
+
+      // getAllTiles() {
+      //   const zoomLevel = this.getZoomLevel()
+      //   for (let i = 0; (i * tileSize * zoomLevel) < this.width; i++) {
+      //     for (let j = 0; (j * tileSize * zoomLevel) < this.height; j++) {
+      //       return
+      //     }
+      //   } 
+      // }
+
+      // Draw placeholder tiles for now
+      drawTiles(ctx, state) {
         ctx.save();
+        ctx.strokeStyle = '#999';
+        ctx.font = '12px monospace';
+
+        for (const { tx, ty, level, tileSize } of this.visibleTiles) {
+          const worldX = this.x + tx * tileSize * this.scale;
+          const worldY = this.y + ty * tileSize * this.scale;
+          const size = tileSize * this.scale;
+
+          ctx.strokeRect(worldX, worldY, size, size);
+          ctx.fillText(`L${level} (${tx},${ty})`, worldX + 4, worldY + 14);
+        }
+
+        ctx.restore();
+      }
+
+      draw(ctx, state) {
+        ctx.save();
+
+        // Background placeholder image extents
         ctx.fillStyle = 'rgba(100, 100, 150, 0.3)';
         ctx.fillRect(this.x, this.y, this.width * this.scale, this.height * this.scale);
 
@@ -67,9 +155,14 @@
         ctx.fillStyle = '#aaa';
         ctx.font = '14px monospace';
         ctx.fillText(`${(this.scale * 100).toFixed(0)}%`, this.x + 5, this.y + 20);
+
         ctx.restore();
+
+        // Phase 1: draw computed tiles
+        this.drawTiles(ctx, state);
       }
     }
+
 
     createApp({
       setup() {
@@ -104,7 +197,8 @@
           ctx.fillStyle = 'blue';
           ctx.fillRect(400, 200, 150, 150);
 
-          state.draggableImages.forEach(img => img.draw(ctx));
+          state.draggableImages.forEach(img => img.computeVisibleTiles(ctx, state));
+          state.draggableImages.forEach(img => img.draw(ctx, state));
         }
 
         function getPointerDistance(p1, p2) {

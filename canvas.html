@@ -20,11 +20,70 @@
       height: 100%;
       background: #2c2c34;
     }
+
+    /* ViewportHUD - overlay that floats above canvas */
+    viewport-hud {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      pointer-events: none;
+      display: block;
+    }
+
+    viewport-hud > * {
+      pointer-events: auto;
+    }
+
+    .hud-top-left {
+      position: absolute;
+      top: 12px;
+      left: 12px;
+    }
+
+    .hud-bottom-right {
+      position: absolute;
+      bottom: 12px;
+      right: 12px;
+    }
+
+    .hud-label {
+      background: rgba(0, 0, 0, 0.6);
+      color: #fff;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-family: monospace;
+      font-size: 12px;
+    }
+
+    .hud-btn {
+      background: rgba(0, 0, 0, 0.6);
+      color: #fff;
+      border: none;
+      padding: 6px 12px;
+      border-radius: 4px;
+      font-family: sans-serif;
+      font-size: 12px;
+      cursor: pointer;
+    }
+
+    .hud-btn:hover {
+      background: rgba(0, 0, 0, 0.8);
+    }
   </style>
 </head>
 <body>
   <div id="app">
     <canvas ref="canvas"></canvas>
+    <viewport-hud>
+      <div class="hud-top-left">
+        <span id="zoom-label" class="hud-label">100%</span>
+      </div>
+      <div class="hud-bottom-right">
+        <button id="fit-btn" class="hud-btn">Fit All (Space)</button>
+      </div>
+    </viewport-hud>
   </div>
 
   <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
@@ -200,6 +259,10 @@
 
           state.draggableImages.forEach(img => img.computeVisibleTiles(ctx, state));
           state.draggableImages.forEach(img => img.draw(ctx, state));
+
+          // Update HUD
+          const zoomLabel = document.getElementById('zoom-label');
+          if (zoomLabel) zoomLabel.textContent = `${(state.scale * 100).toFixed(0)}%`;
         }
 
         function getPointerDistance(p1, p2) {
@@ -279,6 +342,9 @@
               zoomToFitAllImages();
             }
           });
+
+          // HUD button
+          document.getElementById('fit-btn').addEventListener('click', zoomToFitAllImages);
 
           // Mouse drag
           canvas.addEventListener('mousedown', e => {

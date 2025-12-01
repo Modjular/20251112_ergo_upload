@@ -130,7 +130,6 @@
         level = Math.min(Math.max(level, 0), this.maxZoomLevel);
         
         const effectiveTileSize = this.tileSize * Math.pow(2, level);
-        console.log('level', level, effectiveTileSize)
 
         // 2. Convert the viewport from screen → world → image space
         // Screen rect: (0,0) → (canvas.width, canvas.height)
@@ -166,8 +165,17 @@
         const tiles = [];
         for (let ty = ty0; ty <= ty1; ty++) {
           for (let tx = tx0; tx <= tx1; tx++) {
-            const tz = 0 // TODO
-            tiles.push({ tz, ty, tx, level, tileSize: effectiveTileSize });
+            const tz = 0; // TODO
+
+            // Calculate actual tile dimensions (edges may be smaller)
+            const tileX0 = tx * effectiveTileSize;
+            const tileY0 = ty * effectiveTileSize;
+            const tileWidth = Math.round(Math.min(effectiveTileSize, this.width - tileX0) / Math.pow(2, level))
+            const tileHeight = Math.round(Math.min(effectiveTileSize, this.height - tileY0) / Math.pow(2, level))
+
+            // console.log(level, tz, ty, tx, 'tilewidth', tileWidth, this.width, tileX0)
+
+            tiles.push({ tz, ty, tx, level, tileSize: effectiveTileSize, tileWidth, tileHeight });
           }
         }
 
@@ -175,49 +183,88 @@
         return tiles;
       }
 
-      // Draw placeholder tiles for now
-      drawTiles(ctx, state) {
+      drawTiles(ctx) {
         ctx.save();
-        ctx.strokeStyle = '#999';
-        ctx.font = '12px monospace';
 
-        this.visibleTiles.forEach(tile => this.fetchTile(tile)) // TODO: Cache invalidation
+        this.visibleTiles.forEach(tile => this.fetchTile(tile));
 
-        for (const { tz, ty, tx, level, tileSize } of this.visibleTiles) {
+        for (const { tz, ty, tx, level, tileSize, tileWidth, tileHeight } of this.visibleTiles) {
+          const key = `L${level}_Z${tz}_${ty}_${tx}`;
           const worldX = this.x + tx * tileSize * this.scale;
           const worldY = this.y + ty * tileSize * this.scale;
-          const size = tileSize * this.scale;
-          const fontsize = 24 * Math.pow(2, level)
+          // const size = tileSize * this.scale;
+          const width = tileWidth * Math.pow(2, level)
+          const height = tileHeight * Math.pow(2, level)
 
-          ctx.strokeRect(worldX, worldY, size, size);
-          ctx.font = `${fontsize}px monospace`
-          ctx.fillText(`L${level} (${tz},${ty},${tx})`, worldX + fontsize, worldY + fontsize);
+          const cached = this.tiles.get(key);
+          if (cached && cached.imageData) {
+            ctx.drawImage(cached.canvas, worldX, worldY, width, height);
+          } else {
+            ctx.strokeStyle = '#999';
+            ctx.strokeRect(worldX, worldY, width, height);
+          }
         }
 
         ctx.restore();
       }
 
-      fetchTile(tile) {
-        const BASE_URL = 'http://127.0.0.1:8000'
-        const { tz, ty, tx, level, tileSize } = tile
-        const key = `L${level}_Z${tz}_${ty}_${tx}`
-        const { filename } = this.metadata
+      uint16ToImageData(uint16Data, width, height) {
+        const imageData = new ImageData(width, height);
+        const rgba = imageData.data;
 
-        if (this.tiles.has(key)) return
+        let min = Infinity, max = -Infinity;
+        for (let i = 0; i < uint16Data.length; i++) {
+          min = Math.min(min, uint16Data[i]);
+          max = Math.max(max, uint16Data[i]);
+        }
 
-        // 1. Fetch tile data
-        fetch(BASE_URL + '/tile/' + encodeURI(filename) + '/' + key)
-          .then(res => res.blob())
-          .then(blob => {
-            // 2. Create new image, add it to state
-            const data = Uint16Array.from(blob)
+        min = 0; max = 4000;
+        const range = max - min || 1;
 
-            this.tiles.set(key, data)
-            console.debug('fetched', key)
-          })
+        for (let i = 0; i < uint16Data.length; i++) {
+          const val = Math.floor(((uint16Data[i] - min) / range) * 255);
+          const idx = i * 4;
+          rgba[idx] = val;
+          rgba[idx + 1] = val;
+          rgba[idx + 2] = val;
+          rgba[idx + 3] = 255;
+        }
+
+        return imageData;
       }
 
-      draw(ctx, state) {
+      fetchTile(tile) {
+        const BASE_URL = 'http://127.0.0.1:8000';
+        const { tz, ty, tx, level, tileWidth, tileHeight } = tile;
+        const key = `L${level}_Z${tz}_${ty}_${tx}`;
+        const { filename } = this.metadata;
+
+        if (this.tiles.has(key)) return;
+
+        this.tiles.set(key, { loading: true });
+
+        fetch(BASE_URL + '/tile/' + encodeURI(filename) + '/' + key)
+          .then(res => res.arrayBuffer())
+          .then(buffer => {
+            const uint16Data = new Uint16Array(buffer);
+            const imageData = this.uint16ToImageData(uint16Data, tileWidth, tileHeight);
+
+            const offscreen = document.createElement('canvas');
+            offscreen.width = tileWidth;
+            offscreen.height = tileHeight;
+            const offCtx = offscreen.getContext('2d');
+            offCtx.putImageData(imageData, 0, 0);
+
+            this.tiles.set(key, { imageData, canvas: offscreen, tileWidth, tileHeight });
+            console.debug('fetched', key);
+          })
+          .catch(err => {
+            this.tiles.delete(key);
+            console.error('Failed to fetch tile', key, err);
+          });
+      }
+
+      draw(ctx) {
         ctx.save();
 
         // Background placeholder image extents
@@ -235,7 +282,7 @@
         ctx.restore();
 
         // Phase 1: draw computed tiles
-        this.drawTiles(ctx, state);
+        this.drawTiles(ctx);
       }
     }
 
@@ -252,11 +299,7 @@
           pointers: {},
           pinchStartDistance: 0,
           pinchStartScale: 1,
-          draggableImages: [
-            // new DraggableImage(20, 50, 100, 100),
-            // new DraggableImage(200, 150, 400, 300),
-            // new DraggableImage(300, 200, 10000, 7000),
-          ],
+          draggableImages: [],
           activeDraggableImage: null
         });
 
@@ -282,7 +325,7 @@
           }
 
           state.draggableImages.forEach(img => img.computeVisibleTiles(ctx, state));
-          state.draggableImages.forEach(img => img.draw(ctx, state));
+          state.draggableImages.forEach(img => img.draw(ctx));
 
           // Update HUD
           const zoomLabel = document.getElementById('zoom-label');

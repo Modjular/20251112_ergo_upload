@@ -91,12 +91,13 @@
     const { createApp, onMounted, reactive } = Vue;
 
     class DraggableImage {
-      constructor(x, y, width, height, tileSize = 256, maxZoomLevel = 8) {
+      constructor(x, y, width, height, metadata, tileSize = 256, maxZoomLevel = 8) {
         this.x = x;
         this.y = y;
         this.scale = 1;
         this.width = width;
         this.height = height;
+        this.metadata = metadata
 
         this.tileSize = tileSize;
         this.maxZoomLevel = maxZoomLevel;
@@ -165,7 +166,8 @@
         const tiles = [];
         for (let ty = ty0; ty <= ty1; ty++) {
           for (let tx = tx0; tx <= tx1; tx++) {
-            tiles.push({ tx, ty, level, tileSize: effectiveTileSize });
+            const tz = 0 // TODO
+            tiles.push({ tz, ty, tx, level, tileSize: effectiveTileSize });
           }
         }
 
@@ -179,7 +181,9 @@
         ctx.strokeStyle = '#999';
         ctx.font = '12px monospace';
 
-        for (const { tx, ty, level, tileSize } of this.visibleTiles) {
+        this.visibleTiles.forEach(tile => this.fetchTile(tile)) // TODO: Cache invalidation
+
+        for (const { tz, ty, tx, level, tileSize } of this.visibleTiles) {
           const worldX = this.x + tx * tileSize * this.scale;
           const worldY = this.y + ty * tileSize * this.scale;
           const size = tileSize * this.scale;
@@ -187,10 +191,30 @@
 
           ctx.strokeRect(worldX, worldY, size, size);
           ctx.font = `${fontsize}px monospace`
-          ctx.fillText(`L${level} (${tx},${ty})`, worldX + fontsize, worldY + fontsize);
+          ctx.fillText(`L${level} (${tz},${ty},${tx})`, worldX + fontsize, worldY + fontsize);
         }
 
         ctx.restore();
+      }
+
+      fetchTile(tile) {
+        const BASE_URL = 'http://127.0.0.1:8000'
+        const { tz, ty, tx, level, tileSize } = tile
+        const key = `L${level}_Z${tz}_${ty}_${tx}`
+        const { filename } = this.metadata
+
+        if (this.tiles.has(key)) return
+
+        // 1. Fetch tile data
+        fetch(BASE_URL + '/tile/' + encodeURI(filename) + '/' + key)
+          .then(res => res.blob())
+          .then(blob => {
+            // 2. Create new image, add it to state
+            const data = Uint16Array.from(blob)
+
+            this.tiles.set(key, data)
+            console.debug('fetched', key)
+          })
       }
 
       draw(ctx, state) {
@@ -229,9 +253,9 @@
           pinchStartDistance: 0,
           pinchStartScale: 1,
           draggableImages: [
-            new DraggableImage(20, 50, 100, 100),
-            new DraggableImage(200, 150, 400, 300),
-            new DraggableImage(300, 200, 10000, 7000),
+            // new DraggableImage(20, 50, 100, 100),
+            // new DraggableImage(200, 150, 400, 300),
+            // new DraggableImage(300, 200, 10000, 7000),
           ],
           activeDraggableImage: null
         });
@@ -268,6 +292,30 @@
         function getPointerDistance(p1, p2) {
           return Math.hypot(p2.x - p1.x, p2.y - p1.y);
         }
+
+        function addImage(filename) {
+          const BASE_URL = 'http://127.0.0.1:8000'
+
+          // 1. Fetch metadata of /file
+          fetch(BASE_URL + '/file/' + encodeURI(filename))
+            .then(res => res.json())
+            .then(metadata => {
+              // 2. Create new image, add it to state
+              console.log(metadata)
+              state.draggableImages.push(new DraggableImage(
+                0,
+                0,
+                metadata.shape[1],
+                metadata.shape[0],
+                { filename, ...metadata },
+              ))     
+            })
+        }
+
+        /**
+         *  DEBUG 
+         */
+        addImage('002_IDv3__aa855_s05_c1.tif')
 
         function zoomToFitAllImages() {
           if (state.draggableImages.length === 0) return;

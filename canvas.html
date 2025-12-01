@@ -81,6 +81,7 @@
         <span id="zoom-label" class="hud-label">100%</span>
       </div>
       <div class="hud-bottom-right">
+        <button id="grid-btn" class="hud-btn">Grid (G)</button>
         <button id="fit-btn" class="hud-btn">Fit All (Space)</button>
       </div>
     </viewport-hud>
@@ -390,6 +391,56 @@
           draw();
         }
 
+        function arrangeInGrid() {
+          if (state.draggableImages.length === 0) return;
+
+          const padding = 50;
+          const images = state.draggableImages;
+
+          // Calculate number of columns (aim for roughly square grid)
+          const cols = Math.ceil(Math.sqrt(images.length));
+
+          // Find max width and height for each column/row
+          const colWidths = [];
+          const rowHeights = [];
+
+          for (let i = 0; i < images.length; i++) {
+            const col = i % cols;
+            const row = Math.floor(i / cols);
+            const img = images[i];
+            const w = img.width * img.scale;
+            const h = img.height * img.scale;
+
+            colWidths[col] = Math.max(colWidths[col] || 0, w);
+            rowHeights[row] = Math.max(rowHeights[row] || 0, h);
+          }
+
+          // Position each image
+          for (let i = 0; i < images.length; i++) {
+            const col = i % cols;
+            const row = Math.floor(i / cols);
+            const img = images[i];
+
+            // Calculate x position: sum of previous column widths + padding
+            let x = 0;
+            for (let c = 0; c < col; c++) {
+              x += colWidths[c] + padding;
+            }
+
+            // Calculate y position: sum of previous row heights + padding
+            let y = 0;
+            for (let r = 0; r < row; r++) {
+              y += rowHeights[r] + padding;
+            }
+
+            img.x = x;
+            img.y = y;
+          }
+
+          draw();
+          zoomToFitAllImages();
+        }
+
         function screenToCanvasCoords(screenX, screenY) {
           const rect = canvas.getBoundingClientRect();
           let sx = (screenX - rect.left) / state.scale - state.offsetX / state.scale;
@@ -432,10 +483,15 @@
               e.preventDefault();
               zoomToFitAllImages();
             }
+            if (e.code === 'KeyG') {
+              e.preventDefault();
+              arrangeInGrid();
+            }
           });
 
-          // HUD button
+          // HUD buttons
           document.getElementById('fit-btn').addEventListener('click', zoomToFitAllImages);
+          document.getElementById('grid-btn').addEventListener('click', arrangeInGrid);
 
           // Mouse drag
           canvas.addEventListener('mousedown', e => {

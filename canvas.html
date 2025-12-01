@@ -114,15 +114,6 @@
         return tiles;
       }
 
-      // getAllTiles() {
-      //   const zoomLevel = this.getZoomLevel()
-      //   for (let i = 0; (i * tileSize * zoomLevel) < this.width; i++) {
-      //     for (let j = 0; (j * tileSize * zoomLevel) < this.height; j++) {
-      //       return
-      //     }
-      //   } 
-      // }
-
       // Draw placeholder tiles for now
       drawTiles(ctx, state) {
         ctx.save();
@@ -133,9 +124,11 @@
           const worldX = this.x + tx * tileSize * this.scale;
           const worldY = this.y + ty * tileSize * this.scale;
           const size = tileSize * this.scale;
+          const fontsize = 24 * Math.pow(2, level)
 
           ctx.strokeRect(worldX, worldY, size, size);
-          ctx.fillText(`L${level} (${tx},${ty})`, worldX + 4, worldY + 14);
+          ctx.font = `${fontsize}px monospace`
+          ctx.fillText(`L${level} (${tx},${ty})`, worldX + fontsize, worldY + fontsize);
         }
 
         ctx.restore();
@@ -179,23 +172,31 @@
           draggableImages: [
             new DraggableImage(20, 50, 100, 100),
             new DraggableImage(200, 150, 400, 300),
-            new DraggableImage(300, 200, 1000, 700),
+            new DraggableImage(300, 200, 10000, 7000),
           ],
           activeDraggableImage: null
         });
 
         let canvas, ctx;
+        const DEBUG = false
 
         function draw() {
           ctx.setTransform(1, 0, 0, 1, 0, 0);
           ctx.clearRect(0, 0, canvas.width, canvas.height);
 
           ctx.setTransform(state.scale, 0, 0, state.scale, state.offsetX, state.offsetY);
-
-          ctx.fillStyle = 'red';
-          ctx.fillRect(100, 100, 200, 200);
-          ctx.fillStyle = 'blue';
-          ctx.fillRect(400, 200, 150, 150);
+          
+          if (DEBUG) {
+            ctx.setTransform(1, 0, 0, 1, 0, 0)
+            ctx.strokeStyle = '#F00'
+            ctx.lineWidth = 2
+            ctx.strokeRect(
+              0 - state.offsetX,
+              0 - state.offsetY,
+              canvas.width / state.scale,
+              canvas.height / state.scale,
+            )
+          }
 
           state.draggableImages.forEach(img => img.computeVisibleTiles(ctx, state));
           state.draggableImages.forEach(img => img.draw(ctx, state));
@@ -203,6 +204,36 @@
 
         function getPointerDistance(p1, p2) {
           return Math.hypot(p2.x - p1.x, p2.y - p1.y);
+        }
+
+        function zoomToFitAllImages() {
+          if (state.draggableImages.length === 0) return;
+
+          // Calculate bounding box of all images in world space
+          let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+          for (const img of state.draggableImages) {
+            minX = Math.min(minX, img.x);
+            minY = Math.min(minY, img.y);
+            maxX = Math.max(maxX, img.x + img.width * img.scale);
+            maxY = Math.max(maxY, img.y + img.height * img.scale);
+          }
+
+          const boundsWidth = maxX - minX;
+          const boundsHeight = maxY - minY;
+          const padding = 40;
+
+          // Calculate scale to fit bounds in canvas with padding
+          const scaleX = (canvas.width - padding * 2) / boundsWidth;
+          const scaleY = (canvas.height - padding * 2) / boundsHeight;
+          state.scale = Math.min(scaleX, scaleY);
+
+          // Center the bounds in the canvas
+          const centerX = (minX + maxX) / 2;
+          const centerY = (minY + maxY) / 2;
+          state.offsetX = canvas.width / 2 - centerX * state.scale;
+          state.offsetY = canvas.height / 2 - centerY * state.scale;
+
+          draw();
         }
 
         function screenToCanvasCoords(screenX, screenY) {
@@ -239,6 +270,14 @@
           // Prevent the context menu from popping up
           canvas.addEventListener('contextmenu', e => {
             e.preventDefault();
+          });
+
+          // Keyboard shortcuts
+          window.addEventListener('keydown', e => {
+            if (e.code === 'Space') {
+              e.preventDefault();
+              zoomToFitAllImages();
+            }
           });
 
           // Mouse drag
@@ -319,7 +358,7 @@
             if (e.ctrlKey) {
               const zoomIntensity = 0.017;
               const delta = e.deltaY * -zoomIntensity;
-              const newScale = Math.max(0.1, state.scale * (1 + delta));
+              const newScale = Math.max(0.05, state.scale * (1 + delta));
 
               const rect = canvas.getBoundingClientRect();
               const mx = e.clientX - rect.left;
@@ -329,6 +368,7 @@
               state.offsetY -= (my - state.offsetY) * (newScale / state.scale - 1);
 
               state.scale = newScale;
+              console.log(state.scale)
               draw();
             } else {
               const panIntensity = 2.3;

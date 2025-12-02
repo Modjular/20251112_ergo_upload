@@ -3,7 +3,7 @@ import uuid
 import shutil
 import tifffile
 from pathlib import Path
-from fastapi import FastAPI, UploadFile, File, Query
+from fastapi import FastAPI, HTTPException, UploadFile, File, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 
@@ -102,6 +102,67 @@ def root():
 def canvas():
     return FileResponse("canvas.html", media_type="text/html")
 
-@app.get('/file')
-def get_file(filepath: str):
-    return Path(filepath).exists()
+@app.get("/debug_canvas")
+def debug_canvas():
+    return FileResponse("debug_canvas.html", media_type="text/html")
+
+@app.get('/file/{filename}')
+def get_file(filename: str):
+    """Returns the file's metadata"""
+    path = Path('./data/' + filename)
+    print('looking for', path)
+
+    if not path.exists():
+        print('ERROR: Could not find', path)
+        return JSONResponse({'error': 'File not found'}, status_code=404)
+    
+    img = tifffile.memmap(path).squeeze()
+
+    metadata = {
+        'shape': img.shape,
+        'dtype': str(img.dtype),
+    }
+
+    return JSONResponse(metadata)
+
+@app.get('/filenames')
+def get_files():
+    """Returns a list of all possible files that can be retrieved"""
+    root = Path('./data')
+    
+    names = []
+    for path in root.glob('.*'):
+        if path.is_dir():
+            names.append(path.name[1:]) # remove the '.' at the beginning
+
+    return names
+
+#
+#   Tiles
+#
+
+@app.get('/tile/{filename}/{tilekey}')
+def get_tiles(filename: str, tilekey: str):
+    from fastapi.responses import Response
+    
+    root = Path('./data')
+    filedir = root / f'.{Path(filename).stem}'
+    filepath = filedir / (tilekey + '.tif')
+
+    if not filedir.exists() or not filepath.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    img = tifffile.imread(filepath)
+    return Response(content=img.tobytes(), media_type="application/octet-stream")
+
+
+'''
+Notes 11/20/25
+### Sessions
+ - When you navigate to */session/{id}, it either loads a pre-existing one, or it inits a new one
+ - A session simply points to pre-existing assets. That is, assets are reused across sessions
+ - Assets are loaded as lazily as possible:
+    - Pyramids are generated only for current zplane
+    - Given that pyramids are 'invisible', should there be an entirely new table for them, or simply a hidden folder at the same level, checked during runtime?
+    - 
+'''

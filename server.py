@@ -102,6 +102,18 @@ def root():
 def canvas():
     return FileResponse("canvas.html", media_type="text/html")
 
+@app.get("/canvas_amp")
+def canvas_amp():
+    return FileResponse("canvas_amp.html", media_type="text/html")
+
+@app.get("/canvas_chatgpt")
+def canvas_chatgpt():
+    return FileResponse("canvas_chatgpt.html", media_type="text/html")
+
+@app.get("/canvas_gemini")
+def canvas_gemini():
+    return FileResponse("canvas_gemini.html", media_type="text/html")
+
 @app.get("/debug_canvas")
 def debug_canvas():
     return FileResponse("debug_canvas.html", media_type="text/html")

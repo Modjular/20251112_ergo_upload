@@ -20,3 +20,23 @@
 **Next Steps**
  - More stress testing with throttled speed
  - Gather a list of features. Do's AND dont's
+
+### 12/2/25
+For fun I asked ChatGPT Free, Gemini 3 Pro, and Amp Smart to refactor `canvas.html` to use pixi.js
+
+Prompt:
+```
+I have a single file webapp.
+
+
+Could you refactor it to utilize Pixi.JS?
+
+...
+```
+
+
+ - ChatGPT didn't produce working code, but it's refactor looks a lot nicer and is shorter (440 loc)
+ - Gemini 3 Pro produced the only working code, *and* heavily improved the loading and rendering. (600 loc)
+ - Amp Smart Produced buggy code, but IMO better result than ChatGPT (582 loc)
+
+I better benchmark would be a best-of-5 competition. But maybe Gemini is just better.

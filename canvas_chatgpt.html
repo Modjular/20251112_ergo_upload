@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Pixi Pan/Zoom + Tiled Images</title>
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      overflow: hidden;
+    }
+    #app {
+      width: 100%;
+      height: 100%;
+      touch-action: none;
+      position: relative;
+    }
+    viewport-hud {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      display: block;
+    }
+    viewport-hud > * { pointer-events: auto; }
+    .hud-top-left { position: absolute; top: 12px; left: 12px; }
+    .hud-bottom-right { position: absolute; bottom: 12px; right: 12px; }
+    .hud-label, .hud-btn {
+      background: rgba(0,0,0,0.6);
+      color: white;
+      padding: 6px 10px;
+      font-size: 12px;
+      border-radius: 4px;
+      font-family: monospace;
+    }
+    .hud-btn { cursor: pointer; margin-left: 1ch; border: none; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <viewport-hud>
+      <div class="hud-top-left">
+        <span id="zoom-label" class="hud-label">100%</span>
+      </div>
+      <div class="hud-bottom-right">
+        <button id="grid-btn" class="hud-btn">Grid (G)</button>
+        <button id="fit-btn" class="hud-btn">Fit All (F)</button>
+      </div>
+    </viewport-hud>
+  </div>
+
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <script src="https://unpkg.com/pixi.js/dist/pixi.min.js"></script>
+  <script>
+    const { createApp, onMounted, reactive } = Vue;
+
+    class DraggableImage {
+      constructor(metadata, tileSize = 256, maxZoomLevel = 8) {
+        this.x = 0;
+        this.y = 0;
+        this.scale = 1;
+
+        this.width = metadata.shape[1];
+        this.height = metadata.shape[0];
+        this.metadata = metadata;
+
+        this.tileSize = tileSize;
+        this.maxZoomLevel = maxZoomLevel;
+
+        this.tiles = new Map();
+        this.visibleTiles = [];
+
+        // Container for all tile sprites
+        this.container = new PIXI.Container();
+        this.container.interactive = true;
+      }
+
+      containsPoint(px, py) {
+        return (
+          px >= this.x &&
+          px <= this.x + this.width * this.scale &&
+          py >= this.y &&
+          py <= this.y + this.height * this.scale
+        );
+      }
+
+      getZoomLevel(globalScale) {
+        const level = Math.floor(Math.log2(1 / (this.scale * globalScale)));
+        return Math.min(Math.max(level, 0), this.maxZoomLevel);
+      }
+
+      computeVisibleTiles(world, globalScale) {
+        const stateScale = globalScale;
+        const localScale = this.scale;
+        const worldScale = stateScale * localScale;
+
+        let level = Math.floor(Math.log2(1 / worldScale));
+        level = Math.min(Math.max(level, 0), this.maxZoomLevel);
+
+        const effective = this.tileSize * Math.pow(2, level);
+
+        // Viewport in world coords
+        const vx0 = -world.x / stateScale;
+        const vy0 = -world.y / stateScale;
+        const vx1 = vx0 + world.app.view.width / stateScale;
+        const vy1 = vy0 + world.app.view.height / stateScale;
+
+        // Convert to image coords
+        const ix0 = (vx0 - this.x) / localScale;
+        const iy0 = (vy0 - this.y) / localScale;
+        const ix1 = (vx1 - this.x) / localScale;
+        const iy1 = (vy1 - this.y) / localScale;
+
+        const cx0 = Math.max(0, ix0);
+        const cy0 = Math.max(0, iy0);
+        const cx1 = Math.min(this.width, ix1);
+        const cy1 = Math.min(this.height, iy1);
+
+        const tx0 = Math.floor(cx0 / effective);
+        const ty0 = Math.floor(cy0 / effective);
+        const tx1 = Math.floor(cx1 / effective);
+        const ty1 = Math.floor(cy1 / effective);
+
+        const tiles = [];
+        for (let ty = ty0; ty <= ty1; ty++) {
+          for (let tx = tx0; tx <= tx1; tx++) {
+            const tz = 0;
+
+            const tileX0 = tx * effective;
+            const tileY0 = ty * effective;
+
+            tiles.push({
+              tz, ty, tx, level,
+              tileWidth: Math.min(effective, this.width - tileX0),
+              tileHeight: Math.min(effective, this.height - tileY0)
+            });
+          }
+        }
+
+        this.visibleTiles = tiles;
+      }
+
+      fetchAndCreateTileSprite(tile) {
+        const key = `L${tile.level}_Z${tile.tz}_${tile.ty}_${tile.tx}`;
+        if (this.tiles.has(key)) return;
+
+        const BASE_URL = "http://127.0.0.1:8000";
+        const { filename } = this.metadata;
+
+        this.tiles.set(key, { loading: true });
+
+        fetch(BASE_URL + "/tile/" + encodeURI(filename) + "/" + key)
+          .then(r => r.arrayBuffer())
+          .then(buf => {
+            const uint16 = new Uint16Array(buf);
+            const imgData = this.uint16ToImageData(uint16, tile.tileWidth, tile.tileHeight);
+
+            const c = document.createElement("canvas");
+            c.width = tile.tileWidth;
+            c.height = tile.tileHeight;
+            c.getContext("2d").putImageData(imgData, 0, 0);
+
+            const tex = PIXI.Texture.from(c);
+            const sprite = new PIXI.Sprite(tex);
+            sprite.anchor.set(0);
+
+            this.tiles.set(key, { sprite, tex, tile });
+
+            this.container.addChild(sprite);
+            this.updateTileSpritePosition(tile, sprite);
+          })
+          .catch(err => {
+            console.error("Tile failed", key, err);
+            this.tiles.delete(key);
+          });
+      }
+
+      updateTileSpritePosition(tile, sprite) {
+        const worldX = this.x + tile.tx * this.tileSize * this.scale * Math.pow(2, tile.level);
+        const worldY = this.y + tile.ty * this.tileSize * this.scale * Math.pow(2, tile.level);
+
+        sprite.x = worldX;
+        sprite.y = worldY;
+
+        sprite.width = tile.tileWidth * this.scale;
+        sprite.height = tile.tileHeight * this.scale;
+      }
+
+      updateSprites(globalScale) {
+        for (const tile of this.visibleTiles) {
+          const key = `L${tile.level}_Z${tile.tz}_${tile.ty}_${tile.tx}`;
+          const entry = this.tiles.get(key);
+
+          if (!entry || entry.loading) {
+            this.fetchAndCreateTileSprite(tile);
+            continue;
+          }
+
+          this.updateTileSpritePosition(tile, entry.sprite);
+        }
+      }
+
+      uint16ToImageData(uint16Data, w, h) {
+        const img = new ImageData(w, h);
+        const d = img.data;
+
+        const min = 0, max = 4000;
+        const range = max - min;
+
+        for (let i = 0; i < uint16Data.length; i++) {
+          const val = Math.floor(((uint16Data[i] - min) / range) * 255);
+          const j = i * 4;
+          d[j] = d[j+1] = d[j+2] = val;
+          d[j+3] = 255;
+        }
+        return img;
+      }
+    }
+
+    createApp({
+      setup() {
+        const state = reactive({
+          world: null,
+          app: null,
+          scale: 1,
+          draggingWorld: false,
+          lastX: 0,
+          lastY: 0,
+          draggableImages: [],
+          activeImg: null
+        });
+
+        function arrangeGrid() {
+          const imgs = state.draggableImages;
+          if (!imgs.length) return;
+
+          const pad = 40;
+          const cols = Math.ceil(Math.sqrt(imgs.length));
+
+          const colW = [];
+          const rowH = [];
+
+          imgs.forEach((img, i) => {
+            const c = i % cols;
+            const r = Math.floor(i / cols);
+            colW[c] = Math.max(colW[c] || 0, img.width);
+            rowH[r] = Math.max(rowH[r] || 0, img.height);
+          });
+
+          imgs.forEach((img, i) => {
+            const c = i % cols;
+            const r = Math.floor(i / cols);
+
+            let x = 0;
+            for (let cc = 0; cc < c; cc++) x += colW[cc] + pad;
+
+            let y = 0;
+            for (let rr = 0; rr < r; rr++) y += rowH[rr] + pad;
+
+            img.x = x;
+            img.y = y;
+            img.container.x = x;
+            img.container.y = y;
+          });
+
+          fitAll();
+        }
+
+        function fitAll() {
+          const imgs = state.draggableImages;
+          if (!imgs.length) return;
+
+          let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+
+          for (const img of imgs) {
+            minX = Math.min(minX, img.x);
+            minY = Math.min(minY, img.y);
+            maxX = Math.max(maxX, img.x + img.width);
+            maxY = Math.max(maxY, img.y + img.height);
+          }
+
+          const W = maxX - minX;
+          const H = maxY - minY;
+          const pad = 40;
+
+          const scaleX = (state.app.view.width - pad*2) / W;
+          const scaleY = (state.app.view.height - pad*2) / H;
+          const s = Math.min(scaleX, scaleY);
+
+          state.scale = s;
+          state.world.scale.set(s);
+
+          const cx = (minX + maxX) / 2;
+          const cy = (minY + maxY) / 2;
+
+          state.world.x = state.app.view.width/2 - cx*s;
+          state.world.y = state.app.view.height/2 - cy*s;
+
+          updateHUD();
+        }
+
+        function updateHUD() {
+          document.getElementById("zoom-label")
+            .textContent = (state.scale * 100).toFixed(0) + "%";
+        }
+
+        function addImage(filename) {
+          const BASE_URL = "http://127.0.0.1:8000";
+
+          fetch(BASE_URL + "/file/" + encodeURI(filename))
+            .then(r => r.json())
+            .then(meta => {
+              const img = new DraggableImage(meta);
+              img.container.eventMode = "static";
+
+              img.container.on("pointerdown", e => {
+                state.activeImg = img;
+                img.dragLastX = e.global.x;
+                img.dragLastY = e.global.y;
+                e.stopPropagation();
+              });
+
+              img.container.on("pointermove", e => {
+                if (state.activeImg !== img) return;
+                const dx = e.global.x - img.dragLastX;
+                const dy = e.global.y - img.dragLastY;
+                img.x += dx / state.scale;
+                img.y += dy / state.scale;
+                img.container.x = img.x;
+                img.container.y = img.y;
+                img.dragLastX = e.global.x;
+                img.dragLastY = e.global.y;
+              });
+
+              img.container.on("pointerup", () => {
+                if (state.activeImg === img) state.activeImg = null;
+              });
+
+              state.world.addChild(img.container);
+              state.draggableImages.push(img);
+            });
+        }
+
+        function renderUpdate() {
+          for (const img of state.draggableImages) {
+            img.computeVisibleTiles(state.world, state.scale);
+            img.updateSprites(state.scale);
+          }
+          updateHUD();
+        }
+
+        onMounted(() => {
+          const app = new PIXI.Application({
+            resizeTo: document.getElementById("app"),
+            background: "#2c2c34"
+          });
+          document.getElementById("app").appendChild(app.view);
+
+          const world = new PIXI.Container();
+          world.app = app;
+          world.eventMode = "static";
+          world.sortableChildren = true;
+
+          app.stage.addChild(world);
+
+          state.app = app;
+          state.world = world;
+
+          // World dragging
+          app.stage.on("pointerdown", e => {
+            if (state.activeImg) return;
+            state.draggingWorld = true;
+            state.lastX = e.global.x;
+            state.lastY = e.global.y;
+          });
+
+          app.stage.on("pointermove", e => {
+            if (!state.draggingWorld) return;
+            const dx = e.global.x - state.lastX;
+            const dy = e.global.y - state.lastY;
+            state.world.x += dx;
+            state.world.y += dy;
+            state.lastX = e.global.x;
+            state.lastY = e.global.y;
+          });
+
+          app.stage.on("pointerup", () => state.draggingWorld = false);
+          app.stage.on("pointerupoutside", () => state.draggingWorld = false);
+
+          // Zoom
+          app.view.addEventListener("wheel", e => {
+            e.preventDefault();
+
+            if (e.ctrlKey) {
+              const scaleFactor = e.deltaY < 0 ? 1.1 : 0.9;
+              const newScale = Math.max(0.05, state.scale * scaleFactor);
+
+              // Keep mouse point stable
+              const rect = app.view.getBoundingClientRect();
+              const mx = e.clientX - rect.left;
+              const my = e.clientY - rect.top;
+
+              const wx = (mx - state.world.x) / state.scale;
+              const wy = (my - state.world.y) / state.scale;
+
+              state.scale = newScale;
+              state.world.scale.set(newScale);
+
+              state.world.x = mx - wx * newScale;
+              state.world.y = my - wy * newScale;
+
+              updateHUD();
+            } else {
+              state.world.x -= e.deltaX * 1.5;
+              state.world.y -= e.deltaY * 1.5;
+            }
+          }, { passive: false });
+
+          // Buttons + shortcuts
+          document.getElementById("fit-btn").onclick = fitAll;
+          document.getElementById("grid-btn").onclick = arrangeGrid;
+
+          window.addEventListener("keydown", e => {
+            if (e.code === "KeyF") fitAll();
+            if (e.code === "KeyG") arrangeGrid();
+          });
+
+          // Debug: load 36 copies
+          for (let i = 0; i < 36; i++) {
+            addImage("002_IDv3__aa855_s05_c1.tif");
+          }
+
+          setInterval(renderUpdate, 100);
+        });
+
+        return {};
+      }
+    }).mount("#app");
+  </script>
+</body>
+</html>

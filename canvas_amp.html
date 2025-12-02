@@ -1,0 +1,582 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Pan/Zoom Canvas (Pixi.JS)</title>
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      overflow: hidden;
+    }
+    #app {
+      width: 100%;
+      height: 100%;
+      touch-action: none;
+      background: #2c2c34;
+    }
+    canvas {
+      display: block;
+    }
+
+    viewport-hud {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      pointer-events: none;
+      display: block;
+    }
+
+    viewport-hud > * {
+      pointer-events: auto;
+    }
+
+    .hud-top-left {
+      position: absolute;
+      top: 12px;
+      left: 12px;
+    }
+
+    .hud-bottom-right {
+      position: absolute;
+      bottom: 12px;
+      right: 12px;
+    }
+
+    .hud-label {
+      background: rgba(0, 0, 0, 0.6);
+      color: #fff;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-family: monospace;
+      font-size: 12px;
+    }
+
+    .hud-btn {
+      background: rgba(0, 0, 0, 0.6);
+      color: #fff;
+      border: none;
+      padding: 6px 12px;
+      border-radius: 4px;
+      font-family: sans-serif;
+      font-size: 12px;
+      cursor: pointer;
+      margin-left: 1ch;
+    }
+
+    .hud-btn:hover {
+      background: rgba(0, 0, 0, 0.8);
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <viewport-hud>
+      <div class="hud-top-left">
+        <span id="zoom-label" class="hud-label">100%</span>
+      </div>
+      <div class="hud-bottom-right">
+        <button id="grid-btn" class="hud-btn">Grid (G)</button>
+        <button id="fit-btn" class="hud-btn">Fit All (F)</button>
+      </div>
+    </viewport-hud>
+  </div>
+
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <script src="https://pixijs.download/v8.6.6/pixi.min.js"></script>
+  <script>
+    const { createApp, onMounted, reactive } = Vue;
+
+    class DraggableImage {
+      constructor(x, y, width, height, metadata, tileSize = 256, maxZoomLevel = 8) {
+        this.x = x;
+        this.y = y;
+        this.imageScale = 1;
+        this.width = width;
+        this.height = height;
+        this.metadata = metadata;
+
+        this.tileSize = tileSize;
+        this.maxZoomLevel = maxZoomLevel;
+
+        this.isDragging = false;
+        this.dragLastX = 0;
+        this.dragLastY = 0;
+
+        this.tiles = new Map();
+        this.visibleTiles = [];
+
+        this.container = new PIXI.Container();
+        this.container.x = x;
+        this.container.y = y;
+
+        this.background = new PIXI.Graphics();
+        this.container.addChild(this.background);
+
+        this.tilesContainer = new PIXI.Container();
+        this.container.addChild(this.tilesContainer);
+
+        this.label = new PIXI.Text({
+          text: '100%',
+          style: { fontFamily: 'monospace', fontSize: 14, fill: 0xaaaaaa }
+        });
+        this.label.x = 5;
+        this.label.y = 5;
+        this.container.addChild(this.label);
+
+        this.drawBackground();
+      }
+
+      drawBackground() {
+        this.background.clear();
+        this.background.rect(0, 0, this.width * this.imageScale, this.height * this.imageScale);
+        this.background.fill({ color: 0x646496, alpha: 0.3 });
+        this.background.stroke({ color: 0x4a9eff, width: 2 });
+      }
+
+      updatePosition() {
+        this.container.x = this.x;
+        this.container.y = this.y;
+      }
+
+      containsPoint(px, py) {
+        return px >= this.x && px <= this.x + this.width * this.imageScale &&
+               py >= this.y && py <= this.y + this.height * this.imageScale;
+      }
+
+      computeVisibleTiles(app, viewportScale, offsetX, offsetY) {
+        const worldScale = viewportScale * this.imageScale;
+
+        let level = Math.floor(Math.log2(1 / worldScale));
+        level = Math.min(Math.max(level, 0), this.maxZoomLevel);
+
+        const effectiveTileSize = this.tileSize * Math.pow(2, level);
+
+        const canvasWidth = app.canvas.width;
+        const canvasHeight = app.canvas.height;
+
+        const wx0 = (0 - offsetX) / viewportScale;
+        const wy0 = (0 - offsetY) / viewportScale;
+        const wx1 = (canvasWidth - offsetX) / viewportScale;
+        const wy1 = (canvasHeight - offsetY) / viewportScale;
+
+        const ix0 = (wx0 - this.x) / this.imageScale;
+        const iy0 = (wy0 - this.y) / this.imageScale;
+        const ix1 = (wx1 - this.x) / this.imageScale;
+        const iy1 = (wy1 - this.y) / this.imageScale;
+
+        const cx0 = Math.max(0, ix0);
+        const cy0 = Math.max(0, iy0);
+        const cx1 = Math.min(this.width, ix1);
+        const cy1 = Math.min(this.height, iy1);
+
+        const tx0 = Math.floor(cx0 / effectiveTileSize);
+        const ty0 = Math.floor(cy0 / effectiveTileSize);
+        const tx1 = Math.floor(cx1 / effectiveTileSize);
+        const ty1 = Math.floor(cy1 / effectiveTileSize);
+
+        const tiles = [];
+        for (let ty = ty0; ty <= ty1; ty++) {
+          for (let tx = tx0; tx <= tx1; tx++) {
+            const tz = 0;
+
+            const tileX0 = tx * effectiveTileSize;
+            const tileY0 = ty * effectiveTileSize;
+            const tileWidth = Math.round(Math.min(effectiveTileSize, this.width - tileX0) / Math.pow(2, level));
+            const tileHeight = Math.round(Math.min(effectiveTileSize, this.height - tileY0) / Math.pow(2, level));
+
+            tiles.push({ tz, ty, tx, level, tileSize: effectiveTileSize, tileWidth, tileHeight });
+          }
+        }
+
+        this.visibleTiles = tiles;
+        return tiles;
+      }
+
+      updateTiles() {
+        this.visibleTiles.forEach(tile => this.fetchTile(tile));
+
+        const visibleKeys = new Set(
+          this.visibleTiles.map(t => `L${t.level}_Z${t.tz}_${t.ty}_${t.tx}`)
+        );
+
+        for (const child of [...this.tilesContainer.children]) {
+          if (!visibleKeys.has(child.tileKey)) {
+            this.tilesContainer.removeChild(child);
+          }
+        }
+
+        for (const { tz, ty, tx, level, tileSize, tileWidth, tileHeight } of this.visibleTiles) {
+          const key = `L${level}_Z${tz}_${ty}_${tx}`;
+          const cached = this.tiles.get(key);
+
+          if (cached && cached.texture && !cached.addedToStage) {
+            const sprite = new PIXI.Sprite(cached.texture);
+            sprite.tileKey = key;
+            sprite.x = tx * tileSize * this.imageScale;
+            sprite.y = ty * tileSize * this.imageScale;
+            sprite.width = tileWidth * Math.pow(2, level);
+            sprite.height = tileHeight * Math.pow(2, level);
+            this.tilesContainer.addChild(sprite);
+            cached.addedToStage = true;
+          }
+        }
+
+        this.label.text = `${(this.imageScale * 100).toFixed(0)}%`;
+      }
+
+      uint16ToImageData(uint16Data, width, height) {
+        const imageData = new ImageData(width, height);
+        const rgba = imageData.data;
+
+        let min = 0, max = 4000;
+        const range = max - min || 1;
+
+        for (let i = 0; i < uint16Data.length; i++) {
+          const val = Math.floor(((uint16Data[i] - min) / range) * 255);
+          const idx = i * 4;
+          rgba[idx] = val;
+          rgba[idx + 1] = val;
+          rgba[idx + 2] = val;
+          rgba[idx + 3] = 255;
+        }
+
+        return imageData;
+      }
+
+      fetchTile(tile) {
+        const BASE_URL = 'http://127.0.0.1:8000';
+        const { tz, ty, tx, level, tileWidth, tileHeight } = tile;
+        const key = `L${level}_Z${tz}_${ty}_${tx}`;
+        const { filename } = this.metadata;
+
+        if (this.tiles.has(key)) return;
+
+        this.tiles.set(key, { loading: true });
+
+        fetch(BASE_URL + '/tile/' + encodeURI(filename) + '/' + key)
+          .then(res => res.arrayBuffer())
+          .then(buffer => {
+            const uint16Data = new Uint16Array(buffer);
+            const imageData = this.uint16ToImageData(uint16Data, tileWidth, tileHeight);
+
+            const offscreen = document.createElement('canvas');
+            offscreen.width = tileWidth;
+            offscreen.height = tileHeight;
+            const offCtx = offscreen.getContext('2d');
+            offCtx.putImageData(imageData, 0, 0);
+
+            const texture = PIXI.Texture.from(offscreen);
+
+            this.tiles.set(key, { texture, tileWidth, tileHeight, addedToStage: false });
+            console.debug('fetched', key);
+          })
+          .catch(err => {
+            this.tiles.delete(key);
+            console.error('Failed to fetch tile', key, err);
+          });
+      }
+    }
+
+    createApp({
+      setup() {
+        const state = reactive({
+          offsetX: 0,
+          offsetY: 0,
+          scale: 1,
+          isDragging: false,
+          lastX: 0,
+          lastY: 0,
+          pointers: {},
+          pinchStartDistance: 0,
+          pinchStartScale: 1,
+          draggableImages: [],
+          activeDraggableImage: null
+        });
+
+        let app;
+        let viewport;
+
+        function updateViewport() {
+          viewport.scale.set(state.scale);
+          viewport.x = state.offsetX;
+          viewport.y = state.offsetY;
+
+          state.draggableImages.forEach(img => {
+            img.computeVisibleTiles(app, state.scale, state.offsetX, state.offsetY);
+            img.updateTiles();
+          });
+
+          const zoomLabel = document.getElementById('zoom-label');
+          if (zoomLabel) zoomLabel.textContent = `${(state.scale * 100).toFixed(0)}%`;
+        }
+
+        function getPointerDistance(p1, p2) {
+          return Math.hypot(p2.x - p1.x, p2.y - p1.y);
+        }
+
+        function addImage(filename) {
+          const BASE_URL = 'http://127.0.0.1:8000';
+
+          fetch(BASE_URL + '/file/' + encodeURI(filename))
+            .then(res => res.json())
+            .then(metadata => {
+              const img = new DraggableImage(
+                0,
+                0,
+                metadata.shape[1],
+                metadata.shape[0],
+                { filename, ...metadata }
+              );
+              state.draggableImages.push(img);
+              viewport.addChild(img.container);
+            });
+        }
+
+        for (let i = 0; i < 36; i++) {
+          addImage('002_IDv3__aa855_s05_c1.tif');
+        }
+
+        function zoomToFitAllImages() {
+          if (state.draggableImages.length === 0) return;
+
+          let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+          for (const img of state.draggableImages) {
+            minX = Math.min(minX, img.x);
+            minY = Math.min(minY, img.y);
+            maxX = Math.max(maxX, img.x + img.width * img.imageScale);
+            maxY = Math.max(maxY, img.y + img.height * img.imageScale);
+          }
+
+          const boundsWidth = maxX - minX;
+          const boundsHeight = maxY - minY;
+          const padding = 40;
+
+          const scaleX = (app.canvas.width - padding * 2) / boundsWidth;
+          const scaleY = (app.canvas.height - padding * 2) / boundsHeight;
+          state.scale = Math.min(scaleX, scaleY);
+
+          const centerX = (minX + maxX) / 2;
+          const centerY = (minY + maxY) / 2;
+          state.offsetX = app.canvas.width / 2 - centerX * state.scale;
+          state.offsetY = app.canvas.height / 2 - centerY * state.scale;
+
+          updateViewport();
+        }
+
+        function arrangeInGrid() {
+          if (state.draggableImages.length === 0) return;
+
+          const padding = 50;
+          const images = state.draggableImages;
+          const cols = Math.ceil(Math.sqrt(images.length));
+
+          const colWidths = [];
+          const rowHeights = [];
+
+          for (let i = 0; i < images.length; i++) {
+            const col = i % cols;
+            const row = Math.floor(i / cols);
+            const img = images[i];
+            const w = img.width * img.imageScale;
+            const h = img.height * img.imageScale;
+
+            colWidths[col] = Math.max(colWidths[col] || 0, w);
+            rowHeights[row] = Math.max(rowHeights[row] || 0, h);
+          }
+
+          for (let i = 0; i < images.length; i++) {
+            const col = i % cols;
+            const row = Math.floor(i / cols);
+            const img = images[i];
+
+            let x = 0;
+            for (let c = 0; c < col; c++) {
+              x += colWidths[c] + padding;
+            }
+
+            let y = 0;
+            for (let r = 0; r < row; r++) {
+              y += rowHeights[r] + padding;
+            }
+
+            img.x = x;
+            img.y = y;
+            img.updatePosition();
+          }
+
+          updateViewport();
+          zoomToFitAllImages();
+        }
+
+        setTimeout(arrangeInGrid, 500);
+
+        function screenToWorldCoords(screenX, screenY) {
+          const sx = (screenX - state.offsetX) / state.scale;
+          const sy = (screenY - state.offsetY) / state.scale;
+          return { sx, sy };
+        }
+
+        onMounted(async () => {
+          app = new PIXI.Application();
+          await app.init({
+            background: '#2c2c34',
+            resizeTo: document.getElementById('app'),
+            antialias: true
+          });
+
+          document.getElementById('app').insertBefore(app.canvas, document.querySelector('viewport-hud'));
+
+          viewport = new PIXI.Container();
+          app.stage.addChild(viewport);
+
+          app.ticker.add(() => {
+            state.draggableImages.forEach(img => {
+              img.computeVisibleTiles(app, state.scale, state.offsetX, state.offsetY);
+              img.updateTiles();
+            });
+          });
+
+          app.canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+          window.addEventListener('keydown', e => {
+            if (e.code === 'KeyF') {
+              e.preventDefault();
+              zoomToFitAllImages();
+            }
+            if (e.code === 'KeyG') {
+              e.preventDefault();
+              arrangeInGrid();
+            }
+          });
+
+          document.getElementById('fit-btn').addEventListener('click', zoomToFitAllImages);
+          document.getElementById('grid-btn').addEventListener('click', arrangeInGrid);
+
+          app.canvas.addEventListener('mousedown', e => {
+            const { sx, sy } = screenToWorldCoords(e.clientX, e.clientY);
+
+            if (e.button === 1 && e.buttons === 4) {
+              state.isDragging = true;
+              state.lastX = e.clientX;
+              state.lastY = e.clientY;
+              return;
+            }
+
+            let hitImage = null;
+            if (e.button === 0 && e.buttons === 1) {
+              for (let img of state.draggableImages) {
+                if (img.containsPoint(sx, sy)) {
+                  hitImage = img;
+                  break;
+                }
+              }
+            }
+
+            if (hitImage) {
+              state.activeDraggableImage = hitImage;
+              hitImage.isDragging = true;
+              hitImage.dragLastX = e.clientX;
+              hitImage.dragLastY = e.clientY;
+            }
+          });
+
+          app.canvas.addEventListener('mousemove', e => {
+            if (e.buttons === 4) {
+              const dx = e.clientX - state.lastX;
+              const dy = e.clientY - state.lastY;
+              state.offsetX += dx;
+              state.offsetY += dy;
+              state.lastX = e.clientX;
+              state.lastY = e.clientY;
+              updateViewport();
+            }
+
+            if (state.activeDraggableImage) {
+              const dx = e.clientX - state.activeDraggableImage.dragLastX;
+              const dy = e.clientY - state.activeDraggableImage.dragLastY;
+
+              state.activeDraggableImage.x += dx / state.scale;
+              state.activeDraggableImage.y += dy / state.scale;
+              state.activeDraggableImage.updatePosition();
+
+              state.activeDraggableImage.dragLastX = e.clientX;
+              state.activeDraggableImage.dragLastY = e.clientY;
+            }
+          });
+
+          app.canvas.addEventListener('mouseup', () => {
+            state.isDragging = false;
+            if (state.activeDraggableImage) {
+              state.activeDraggableImage.isDragging = false;
+              state.activeDraggableImage = null;
+            }
+          });
+
+          app.canvas.addEventListener('mouseleave', () => {
+            state.isDragging = false;
+            if (state.activeDraggableImage) {
+              state.activeDraggableImage.isDragging = false;
+              state.activeDraggableImage = null;
+            }
+          });
+
+          app.canvas.addEventListener('wheel', e => {
+            e.preventDefault();
+
+            if (e.ctrlKey) {
+              const zoomIntensity = 0.017;
+              const delta = e.deltaY * -zoomIntensity;
+              const newScale = Math.max(0.05, state.scale * (1 + delta));
+
+              const mx = e.clientX;
+              const my = e.clientY;
+
+              state.offsetX -= (mx - state.offsetX) * (newScale / state.scale - 1);
+              state.offsetY -= (my - state.offsetY) * (newScale / state.scale - 1);
+
+              state.scale = newScale;
+              updateViewport();
+            } else {
+              const panIntensity = 2.3;
+              state.offsetX += e.deltaX * -panIntensity;
+              state.offsetY += e.deltaY * -panIntensity;
+              updateViewport();
+            }
+          }, { passive: false });
+
+          app.canvas.addEventListener('pointerdown', e => {
+            state.pointers[e.pointerId] = e;
+
+            if (Object.keys(state.pointers).length === 2) {
+              const [p1, p2] = Object.values(state.pointers);
+              state.pinchStartDistance = getPointerDistance(p1, p2);
+              state.pinchStartScale = state.scale;
+            }
+          });
+
+          app.canvas.addEventListener('pointermove', e => {
+            if (!(e.pointerId in state.pointers)) return;
+
+            state.pointers[e.pointerId] = e;
+
+            if (Object.keys(state.pointers).length === 2) {
+              const [p1, p2] = Object.values(state.pointers);
+              const newDistance = getPointerDistance(p1, p2);
+              state.scale = state.pinchStartScale * (newDistance / state.pinchStartDistance);
+              updateViewport();
+            }
+          });
+
+          app.canvas.addEventListener('pointerup', e => delete state.pointers[e.pointerId]);
+          app.canvas.addEventListener('pointercancel', e => delete state.pointers[e.pointerId]);
+        });
+
+        return {};
+      }
+    }).mount('#app');
+  </script>
+</body>
+</html>

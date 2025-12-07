@@ -110,8 +110,9 @@
        * @param {Function} onRequestRender - Callback to trigger a screen refresh when async data loads.
        * @param {number} [tileSize=256] - Size of individual tiles in pixels.
        * @param {number} [maxZoomLevel=4] - The lowest resolution level (highest L-number).
+       * @param {number} [lodBias=0] - Offset for LOD calculation. Positive values force lower-res tiles (blocky zoom).
        */
-      constructor(x, y, width, height, metadata, onRequestRender, tileSize = 256, maxZoomLevel = 4) {
+      constructor(x, y, width, height, metadata, onRequestRender, tileSize = 256, maxZoomLevel = 4, lodBias = 0) {
         this.x = x;
         this.y = y;
         this.scale = 1;
@@ -120,7 +121,8 @@
         this.metadata = metadata;
         this.tileSize = tileSize;
         this.maxZoomLevel = maxZoomLevel;
-        
+        this.lodBias = lodBias;
+
         // Callback to the main render loop
         this.onRequestRender = onRequestRender;
 
@@ -175,7 +177,7 @@
         const worldScale = state.scale * this.scale;
         
         // 1. Calculate Target LOD (Level of Detail)
-        let targetLevel = Math.floor(Math.log2(1 / worldScale));
+        let targetLevel = Math.floor(Math.log2(1 / worldScale)) + this.lodBias;
         targetLevel = Math.min(Math.max(targetLevel, 0), this.maxZoomLevel);
 
         // 2. Viewport Culling: Get screen bounds in Local Image Space
@@ -453,7 +455,10 @@
               const img = new DraggableImage(
                 0, 0, metadata.shape[1], metadata.shape[0],
                 { filename, ...metadata },
-                requestRender
+                requestRender,
+                256, // tileSize
+                4,   // maxZoomLevel
+                2    // lodBias -> Change this to 1 or 2 to test the pixelation effect!
               );
               state.draggableImages.push(img);
               worldContainer.addChild(img.container);
@@ -688,6 +693,8 @@
           
           // Watcher: Auto-render when reactive state changes
           watch(state, () => {
+            // TODO: FIX this watcher. For some reason it keeps detecting changes,
+            // causing an infinite loop. I suspect a cycle somewhere.
             // requestRender();
           }, { deep: true });
 

@@ -96,8 +96,21 @@
   <script>
     const { createApp, onMounted, reactive, watch } = Vue;
 
+    /**
+     * Represents a single high-resolution scientific image on the canvas.
+     * Handles multi-resolution tiling (LOD), fetching, caching, and rendering.
+     */
     class DraggableImage {
-      // CHANGE: We now pass 'onRequestRender' callback to the constructor
+      /**
+       * @param {number} x - World X position.
+       * @param {number} y - World Y position.
+       * @param {number} width - Full resolution width of the image.
+       * @param {number} height - Full resolution height of the image.
+       * @param {Object} metadata - File metadata (filename, shape, dtype).
+       * @param {Function} onRequestRender - Callback to trigger a screen refresh when async data loads.
+       * @param {number} [tileSize=256] - Size of individual tiles in pixels.
+       * @param {number} [maxZoomLevel=4] - The lowest resolution level (highest L-number).
+       */
       constructor(x, y, width, height, metadata, onRequestRender, tileSize = 256, maxZoomLevel = 4) {
         this.x = x;
         this.y = y;
@@ -108,20 +121,23 @@
         this.tileSize = tileSize;
         this.maxZoomLevel = maxZoomLevel;
         
-        // Store the callback so we can request a redraw when a tile loads
+        // Callback to the main render loop
         this.onRequestRender = onRequestRender;
 
         this.isDragging = false;
         this.dragLastX = 0;
         this.dragLastY = 0;
 
+        // Cache storage: key -> { texture, sprite, loading, level }
         this.tiles = new Map(); 
         
+        // Pixi Containers
         this.container = new PIXI.Container();
         this.bgGraphics = new PIXI.Graphics();
         this.tileContainer = new PIXI.Container();
         this.overlayGraphics = new PIXI.Graphics();
         
+        // Important: Allows Z-Index to work so High-Res tiles sit on top of Low-Res ones
         this.tileContainer.sortableChildren = true;
 
         this.container.addChild(this.bgGraphics);
@@ -136,17 +152,33 @@
         this.overlayGraphics.addChild(this.textLabel);
       }
 
+      /**
+       * Checks if a point (in World Coordinates) lies within this image's bounding box.
+       * Used for hit-testing mouse clicks.
+       * @param {number} px - World X coordinate of mouse.
+       * @param {number} py - World Y coordinate of mouse.
+       * @returns {boolean} True if point is inside.
+       */
       containsPoint(px, py) {
         return px >= this.x && px <= this.x + this.width * this.scale &&
               py >= this.y && py <= this.y + this.height * this.scale;
       }
 
+      /**
+       * The core rendering logic. Determines which tiles are visible based on 
+       * the current zoom level and viewport, then adds/removes sprites.
+       * Implements "Painter's Algorithm": draws low-res tiles first, then high-res on top.
+       * * @param {PIXI.Application} app - The main Pixi app instance.
+       * @param {Object} state - The global Viewport state (offsetX, offsetY, scale).
+       */
       computeVisibleTiles(app, state) {
         const worldScale = state.scale * this.scale;
         
+        // 1. Calculate Target LOD (Level of Detail)
         let targetLevel = Math.floor(Math.log2(1 / worldScale));
         targetLevel = Math.min(Math.max(targetLevel, 0), this.maxZoomLevel);
 
+        // 2. Viewport Culling: Get screen bounds in Local Image Space
         const viewportX = -state.offsetX / state.scale;
         const viewportY = -state.offsetY / state.scale;
         const viewportW = app.screen.width / state.scale;
@@ -164,9 +196,13 @@
 
         const newVisibleKeys = new Set();
 
+        // 3. Recursive Visibility Loop
+        // Iterate from Target Level (High Res) -> Max Level (Low Res)
         for (let level = targetLevel; level <= this.maxZoomLevel; level++) {
           
           const effectiveTileSize = this.tileSize * Math.pow(2, level);
+          
+          // Calculate tile indices
           const tx0 = Math.floor(cx0 / effectiveTileSize);
           const ty0 = Math.floor(cy0 / effectiveTileSize);
           const tx1 = Math.floor(cx1 / effectiveTileSize);
@@ -178,6 +214,7 @@
               const tileX0 = tx * effectiveTileSize;
               const tileY0 = ty * effectiveTileSize;
               
+              // Handle edge tiles that might be smaller than standard size
               const tileWidth = Math.round(Math.min(effectiveTileSize, this.width - tileX0) / Math.pow(2, level));
               const tileHeight = Math.round(Math.min(effectiveTileSize, this.height - tileY0) / Math.pow(2, level));
 
@@ -188,12 +225,15 @@
               
               newVisibleKeys.add(key);
 
+              // Only trigger network fetches for the Target Level.
+              // Parent levels are shown only if they are ALREADY in the cache (fallback).
               const shouldFetch = (level === targetLevel);
               this.syncTileSprite(tile, key, shouldFetch);
             }
           }
         }
 
+        // 4. Cleanup: Hide sprites not in the current stack
         for (const [key, data] of this.tiles.entries()) {
           if (!newVisibleKeys.has(key) && data.sprite) {
             data.sprite.visible = false;
@@ -201,6 +241,13 @@
         }
       }
 
+      /**
+       * Manages the Pixi Sprite for a specific tile.
+       * Creates it if missing, positions it, and assigns Z-index.
+       * * @param {Object} tile - Tile geometry data.
+       * @param {string} key - Unique tile ID.
+       * @param {boolean} shouldFetch - Whether to trigger a fetch if the tile is missing.
+       */
       syncTileSprite(tile, key, shouldFetch) {
         let cached = this.tiles.get(key);
 
@@ -212,12 +259,14 @@
           return;
         }
 
+        // Create Sprite from Texture if needed
         if (cached.texture && !cached.sprite) {
           const sprite = new PIXI.Sprite(cached.texture);
           this.tileContainer.addChild(sprite);
           cached.sprite = sprite;
         }
 
+        // Update Sprite Transform
         if (cached.sprite) {
           cached.sprite.visible = true;
           cached.sprite.x = tile.tx * tile.effectiveTileSize;
@@ -226,10 +275,20 @@
           const scaleFactor = Math.pow(2, tile.level);
           cached.sprite.width = tile.tileWidth * scaleFactor;
           cached.sprite.height = tile.tileHeight * scaleFactor;
+          
+          // Z-Index: Lower Level (Higher Res) = Higher Index (On Top)
           cached.sprite.zIndex = this.maxZoomLevel - tile.level;
         }
       }
 
+      /**
+       * Converts raw 16-bit Uint16 image data into a viewable Pixi Texture.
+       * Uses a temporary HTML Canvas to perform the pixel mapping.
+       * * @param {Uint16Array} uint16Data - The raw pixel data.
+       * @param {number} width - Width of tile.
+       * @param {number} height - Height of tile.
+       * @returns {PIXI.Texture}
+       */
       uint16ToTexture(uint16Data, width, height) {
         const bufferCanvas = document.createElement('canvas');
         bufferCanvas.width = width;
@@ -238,22 +297,28 @@
         const imageData = ctx.createImageData(width, height);
         const rgba = imageData.data;
 
+        // Normalization range (could be dynamic in future)
         let min = 0, max = 4000;
         const range = max - min || 1;
 
         for (let i = 0; i < uint16Data.length; i++) {
+          // Simple linear mapping: (val - min) / range -> 0..255
           const val = Math.floor(((uint16Data[i] - min) / range) * 255);
           const idx = i * 4;
-          rgba[idx] = val;
-          rgba[idx + 1] = val;
-          rgba[idx + 2] = val;
-          rgba[idx + 3] = 255;
+          rgba[idx] = val;     // R
+          rgba[idx + 1] = val; // G
+          rgba[idx + 2] = val; // B
+          rgba[idx + 3] = 255; // Alpha
         }
 
         ctx.putImageData(imageData, 0, 0);
         return PIXI.Texture.from(bufferCanvas);
       }
 
+      /**
+       * Fetches tile data from the backend.
+       * On success: Updates cache, creates texture, and triggers a scene render.
+       */
       fetchTile(tile, key) {
         const BASE_URL = 'http://127.0.0.1:8000';
         const { filename } = this.metadata;
@@ -268,43 +333,53 @@
             if(cached) {
                 cached.texture = texture;
                 cached.loading = false;
+                // Nearest neighbor for "pixel perfect" scientific view
                 cached.texture.baseTexture.scaleMode = PIXI.SCALE_MODES.NEAREST;
                 
-                // We pass false to fetch because we know we just fetched it
+                // Sync immediately (create sprite) but don't fetch again
                 this.syncTileSprite(tile, key, false);
                 
-                // CHANGE: Trigger the scene redraw now that texture is ready
+                // CRITICAL: Tell the app to redraw because visual data changed
                 this.onRequestRender();
             }
           })
           .catch(err => {
+            // If fetch fails, remove from cache so we can try again later
             this.tiles.delete(key);
-            // Even on error, we might want to redraw (e.g. to remove a loading indicator)
-            this.onRequestRender();
+            this.onRequestRender(); // Redraw to potentially clear loading states
           });
       }
 
+      /**
+       * Updates the main container transform and redraws the UI overlays.
+       * Called every render frame.
+       */
       updateVisuals(app, state) {
         this.container.x = this.x;
         this.container.y = this.y;
         this.container.scale.set(this.scale);
 
+        // Draw Background
         const g = this.bgGraphics;
         g.clear();
         g.beginFill(0x646496, 0.3);
         g.drawRect(0, 0, this.width, this.height);
         g.endFill();
 
+        // Draw Selection Border
         const o = this.overlayGraphics;
         o.clear();
+        // Keep line width consistent regardless of zoom
         o.lineStyle(2 / (state.scale * this.scale), 0x4a9eff, 1);
         o.drawRect(0, 0, this.width, this.height);
 
+        // Update Text Label
         this.textLabel.text = `${(this.scale * 100).toFixed(0)}%`;
         this.textLabel.x = 5 / this.scale;
         this.textLabel.y = 20 / this.scale;
         this.textLabel.scale.set(1 / this.scale); 
 
+        // Recalculate tiles
         this.computeVisibleTiles(app, state);
       }
     }
@@ -324,32 +399,31 @@
 
         let app;
         const worldContainer = new PIXI.Container();
-        
-        //
-        // --- RENDER MANAGER ---
-        //
-
         let renderPending = false;
 
-        // This function acts as the "Gatekeeper" for the GPU.
-        // Logic: 
-        // 1. If 'renderPending' is true, a frame is already scheduled. Do nothing.
-        // 2. If false, set it to true and schedule a render for the next animation frame.
-        // Benefit: 
-        // If 50 tiles load in 10ms, we don't draw 50 times. We draw once at the end of the frame.
+        /**
+         * The "Render Manager". 
+         * Debounces render calls to ensure efficient drawing.
+         * If multiple tiles load in the same frame, we only render once.
+         */
         function requestRender() {
-          if (renderPending) return
-          renderPending = true;
-          requestAnimationFrame(() => {
-            renderScene();
-            renderPending = false;
-          });
+          if (!renderPending) {
+            renderPending = true;
+            requestAnimationFrame(() => {
+              renderScene();
+              renderPending = false;
+            });
+          }
         }
 
+        /**
+         * The main draw loop.
+         * Syncs Pixi objects with Vue state and triggers WebGL render.
+         */
         function renderScene() {
           if (!app) return;
           
-          // 1. Sync World Container
+          // 1. Sync World Container (Camera)
           worldContainer.x = state.offsetX;
           worldContainer.y = state.offsetY;
           worldContainer.scale.set(state.scale);
@@ -357,20 +431,24 @@
           // 2. Sync Images
           state.draggableImages.forEach(img => img.updateVisuals(app, state));
 
-          // 3. Render
+          // 3. Render to Canvas
           app.renderer.render(app.stage);
 
-          // 4. Update HUD
+          // 4. Update DOM HUD
           const zoomLabel = document.getElementById('zoom-label');
           if (zoomLabel) zoomLabel.textContent = `${(state.scale * 100).toFixed(0)}%`;
         }
 
+        /**
+         * Fetches metadata for a file and adds it to the scene.
+         * @param {string} filename - The filename on the server.
+         */
         function addImage(filename) {
           const BASE_URL = 'http://127.0.0.1:8000';
           fetch(BASE_URL + '/file/' + encodeURI(filename))
             .then(res => res.json())
             .then(metadata => {
-              // Pass the requestRender callback to the image
+              // Create image instance and pass the render trigger
               const img = new DraggableImage(
                 0, 0, metadata.shape[1], metadata.shape[0],
                 { filename, ...metadata },
@@ -379,22 +457,29 @@
               state.draggableImages.push(img);
               worldContainer.addChild(img.container);
               
-              // Trigger render to show new empty placeholder
               requestRender();
             })
-            .catch(err => console.warn("Backend error"));
+            .catch(err => console.warn("Backend error: " + err));
         }
 
+        /**
+         * Bootstraps the demo scene with dummy images.
+         */
         function setupScene() {
-          addImage('002_IDv3__aa855_s05_c0.tif');
-          addImage('002_IDv3__aa855_s05_c1.tif');
-          addImage('002_IDv3__aa855_s05_c2.tif');
-          addImage('002_IDv3__aa855_s05_c3.tif');
+          for (let i = 0; i < 9; i++) {
+            addImage('002_IDv3__aa855_s05_c1.tif');
+          }
+          // Delay grid arrangement to allow metadata fetches to complete
           setTimeout(arrangeInGrid, 2000);
         }
 
+        /**
+         * Calculates the bounding box of all images and adjusts 
+         * camera scale/offset to fit them on screen.
+         */
         function zoomToFitAllImages() {
           if (state.draggableImages.length === 0) return;
+          
           let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
           for (const img of state.draggableImages) {
             minX = Math.min(minX, img.x);
@@ -402,12 +487,17 @@
             maxX = Math.max(maxX, img.x + img.width * img.scale);
             maxY = Math.max(maxY, img.y + img.height * img.scale);
           }
+          
           if (minX === Infinity) return;
+
           const boundsWidth = maxX - minX;
           const boundsHeight = maxY - minY;
           const padding = 40;
+
           const scaleX = (app.screen.width - padding * 2) / boundsWidth;
           const scaleY = (app.screen.height - padding * 2) / boundsHeight;
+          
+          // Update State
           state.scale = Math.min(scaleX, scaleY);
           const centerX = (minX + maxX) / 2;
           const centerY = (minY + maxY) / 2;
@@ -415,6 +505,9 @@
           state.offsetY = app.screen.height / 2 - centerY * state.scale;
         }
 
+        /**
+         * Simple layout algorithm to arrange images in a square-ish grid.
+         */
         function arrangeInGrid() {
           if (state.draggableImages.length === 0) return;
           const padding = 50;
@@ -422,6 +515,8 @@
           const cols = Math.ceil(Math.sqrt(images.length));
           const colWidths = [];
           const rowHeights = [];
+
+          // 1. Measure max dimensions per row/col
           for (let i = 0; i < images.length; i++) {
             const col = i % cols;
             const row = Math.floor(i / cols);
@@ -431,6 +526,8 @@
             colWidths[col] = Math.max(colWidths[col] || 0, w);
             rowHeights[row] = Math.max(rowHeights[row] || 0, h);
           }
+
+          // 2. Assign Positions
           for (let i = 0; i < images.length; i++) {
             const col = i % cols;
             const row = Math.floor(i / cols);
@@ -445,6 +542,12 @@
           zoomToFitAllImages();
         }
 
+        /**
+         * Transforms Screen coordinates (pixels) to World coordinates.
+         * @param {number} screenX 
+         * @param {number} screenY 
+         * @returns {{wx: number, wy: number}}
+         */
         function screenToWorld(screenX, screenY) {
           return {
             wx: (screenX - state.offsetX) / state.scale,
@@ -453,29 +556,38 @@
         }
 
         onMounted(() => {
+          // Initialize Pixi Application
           app = new PIXI.Application({
             resizeTo: document.getElementById('app'),
             backgroundColor: 0x2c2c34,
             antialias: true,
             resolution: window.devicePixelRatio || 1,
             autoDensity: true,
-            autoStart: false // CHANGE: Disable automatic render loop
+            autoStart: false // Manual rendering only
           });
           document.getElementById('app').appendChild(app.view);
           app.stage.addChild(worldContainer);
 
           const view = app.view;
+          
+          // Input Handling
           view.addEventListener('contextmenu', e => e.preventDefault());
           
+          // Mouse Down: Hit Testing & Drag Initiation
           view.addEventListener('mousedown', e => {
             const { wx, wy } = screenToWorld(e.clientX, e.clientY);
+            
+            // Middle Click or Alt+Click -> Pan Camera
             if (e.button == 1 || (e.button == 0 && e.altKey)) {
               state.isDragging = true;
               state.lastX = e.clientX;
               state.lastY = e.clientY;
               return;
             }
+
+            // Left Click -> Select Image
             if (e.button == 0) {
+              // Reverse loop to check top-most images first
               for (let i = state.draggableImages.length - 1; i >= 0; i--) {
                 const img = state.draggableImages[i];
                 if (img.containsPoint(wx, wy)) {
@@ -483,17 +595,20 @@
                   img.isDragging = true;
                   img.dragLastX = e.clientX;
                   img.dragLastY = e.clientY;
+                  // Move to top of display stack
                   worldContainer.removeChild(img.container);
                   worldContainer.addChild(img.container);
-                  requestRender(); // CHANGE: Request render on selection change
+                  requestRender(); 
                   break;
                 }
               }
             }
           });
 
+          // Mouse Move: Dragging Logic
           window.addEventListener('mousemove', e => {
             let dirty = false;
+            // Camera Pan
             if (state.isDragging) {
               const dx = e.clientX - state.lastX;
               const dy = e.clientY - state.lastY;
@@ -503,6 +618,7 @@
               state.lastY = e.clientY;
               dirty = true;
             }
+            // Image Drag
             if (state.activeDraggableImage) {
               const img = state.activeDraggableImage;
               const dx = e.clientX - img.dragLastX;
@@ -513,11 +629,10 @@
               img.dragLastY = e.clientY;
               dirty = true;
             }
-            // CHANGE: Only request render if we actually moved something
-            // (Though Vue watch will likely catch this too, explicitly calling here is safe)
             if(dirty) requestRender();
           });
 
+          // Mouse Up: End Dragging
           window.addEventListener('mouseup', () => {
             state.isDragging = false;
             if (state.activeDraggableImage) {
@@ -526,27 +641,31 @@
             }
           });
 
+          // Wheel: Zoom Logic
           view.addEventListener('wheel', e => {
             e.preventDefault();
             if (e.ctrlKey) {
+              // Zoom towards mouse pointer
               const zoomIntensity = 0.002; 
               const delta = -e.deltaY;
               const newScale = Math.max(0.01, state.scale * (1 + delta * zoomIntensity));
               const rect = view.getBoundingClientRect();
               const mx = e.clientX - rect.left;
               const my = e.clientY - rect.top;
+              
+              // Math to keep point under mouse stationary
               state.offsetX -= (mx - state.offsetX) * (newScale / state.scale - 1);
               state.offsetY -= (my - state.offsetY) * (newScale / state.scale - 1);
               state.scale = newScale;
             } else {
+              // Pan
               state.offsetX -= e.deltaX;
               state.offsetY -= e.deltaY;
             }
-            // CHANGE: Wheel changes state, which triggers render via Watch, 
-            // but calling requestRender here ensures immediate responsiveness.
             requestRender();
           }, { passive: false });
 
+          // Keyboard Shortcuts
           window.addEventListener('keydown', e => {
             if (e.code === 'KeyF') zoomToFitAllImages();
             if (e.code === 'KeyG') arrangeInGrid();
@@ -554,17 +673,16 @@
           document.getElementById('fit-btn').addEventListener('click', zoomToFitAllImages);
           document.getElementById('grid-btn').addEventListener('click', arrangeInGrid);
           
-          // CHANGE: Handle Window Resize
+          // Window Resize
           window.addEventListener('resize', () => {
             app.renderer.resize(document.getElementById('app').offsetWidth, document.getElementById('app').offsetHeight);
             requestRender();
           });
 
+          // Initialize Data
           setupScene();
           
-          // CHANGE: Vue Watcher to auto-trigger render on state change
-          // deep: true allows us to catch changes inside the objects if needed, 
-          // though strictly we are mostly changing top-level props here.
+          // Watcher: Auto-render when reactive state changes
           watch(state, () => {
             requestRender();
           }, { deep: true });

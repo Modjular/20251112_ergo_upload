@@ -113,22 +113,24 @@
         this.dragLastY = 0;
 
         // Cache
-        this.tiles = new Map(); // key -> { texture, sprite, loading }
-        this.visibleTiles = [];
-
+        this.tiles = new Map(); // key -> { texture, sprite, loading, level }
+        
         // Pixi Containers
         this.container = new PIXI.Container();
         
-        // Layers: Background -> Tiles -> Overlay/Border
+        // Layers
         this.bgGraphics = new PIXI.Graphics();
         this.tileContainer = new PIXI.Container();
         this.overlayGraphics = new PIXI.Graphics();
         
+        // --- CHANGE 1: Enable Z-Indexing ---
+        // This allows us to ensure High Res tiles sit ON TOP of Low Res tiles
+        this.tileContainer.sortableChildren = true;
+
         this.container.addChild(this.bgGraphics);
         this.container.addChild(this.tileContainer);
         this.container.addChild(this.overlayGraphics);
 
-        // Add a text label using Pixi
         this.textLabel = new PIXI.Text('', {
           fontFamily: 'monospace',
           fontSize: 14,
@@ -138,110 +140,120 @@
       }
 
       containsPoint(px, py) {
-        // Simple AABB check
         return px >= this.x && px <= this.x + this.width * this.scale &&
-               py >= this.y && py <= this.y + this.height * this.scale;
+              py >= this.y && py <= this.y + this.height * this.scale;
       }
 
       computeVisibleTiles(app, state) {
         const worldScale = state.scale * this.scale;
         
-        // LOD Calculation
-        let level = Math.floor(Math.log2(1 / worldScale));
-        level = Math.min(Math.max(level, 0), this.maxZoomLevel);
-        const effectiveTileSize = this.tileSize * Math.pow(2, level);
+        // 1. Calculate the IDEAL level (target resolution)
+        let targetLevel = Math.floor(Math.log2(1 / worldScale));
+        targetLevel = Math.min(Math.max(targetLevel, 0), this.maxZoomLevel);
 
-        // Viewport culling (in Image Space)
-        // 1. Get visible world bounds
+        // Viewport Calculations (Project screen bounds to image local space)
         const viewportX = -state.offsetX / state.scale;
         const viewportY = -state.offsetY / state.scale;
         const viewportW = app.screen.width / state.scale;
         const viewportH = app.screen.height / state.scale;
 
-        // 2. Convert to Local Image Space
         const ix0 = (viewportX - this.x) / this.scale;
         const iy0 = (viewportY - this.y) / this.scale;
         const ix1 = (viewportX + viewportW - this.x) / this.scale;
         const iy1 = (viewportY + viewportH - this.y) / this.scale;
 
-        // 3. Clamp
         const cx0 = Math.max(0, ix0);
         const cy0 = Math.max(0, iy0);
         const cx1 = Math.min(this.width, ix1);
         const cy1 = Math.min(this.height, iy1);
 
-        // 4. Calculate Indices
-        const tx0 = Math.floor(cx0 / effectiveTileSize);
-        const ty0 = Math.floor(cy0 / effectiveTileSize);
-        const tx1 = Math.floor(cx1 / effectiveTileSize);
-        const ty1 = Math.floor(cy1 / effectiveTileSize);
-
         const newVisibleKeys = new Set();
 
-        for (let ty = ty0; ty <= ty1; ty++) {
-          for (let tx = tx0; tx <= tx1; tx++) {
-            const tz = 0;
-            const tileX0 = tx * effectiveTileSize;
-            const tileY0 = ty * effectiveTileSize;
-            
-            // Calculate dimensions based on LOD
-            const tileWidth = Math.round(Math.min(effectiveTileSize, this.width - tileX0) / Math.pow(2, level));
-            const tileHeight = Math.round(Math.min(effectiveTileSize, this.height - tileY0) / Math.pow(2, level));
+        // --- CHANGE 2: The Fallback Loop ---
+        // Iterate from the Target Level (High Res) up to Max Level (Low Res).
+        // We calculate visible tiles for ALL these layers.
+        for (let level = targetLevel; level <= this.maxZoomLevel; level++) {
+          
+          const effectiveTileSize = this.tileSize * Math.pow(2, level);
 
-            if (tileWidth <= 0 || tileHeight <= 0) continue;
+          // Calculate tile indices for this specific level
+          const tx0 = Math.floor(cx0 / effectiveTileSize);
+          const ty0 = Math.floor(cy0 / effectiveTileSize);
+          const tx1 = Math.floor(cx1 / effectiveTileSize);
+          const ty1 = Math.floor(cy1 / effectiveTileSize);
 
-            const tile = { tz, ty, tx, level, effectiveTileSize, tileWidth, tileHeight };
-            const key = `L${level}_Z${tz}_${ty}_${tx}`;
-            
-            newVisibleKeys.add(key);
-            this.syncTileSprite(tile, key);
+          for (let ty = ty0; ty <= ty1; ty++) {
+            for (let tx = tx0; tx <= tx1; tx++) {
+              const tz = 0;
+              const tileX0 = tx * effectiveTileSize;
+              const tileY0 = ty * effectiveTileSize;
+              
+              // Dimensions for this specific LOD
+              const tileWidth = Math.round(Math.min(effectiveTileSize, this.width - tileX0) / Math.pow(2, level));
+              const tileHeight = Math.round(Math.min(effectiveTileSize, this.height - tileY0) / Math.pow(2, level));
+
+              if (tileWidth <= 0 || tileHeight <= 0) continue;
+
+              const tile = { tz, ty, tx, level, effectiveTileSize, tileWidth, tileHeight };
+              const key = `L${level}_Z${tz}_${ty}_${tx}`;
+              
+              newVisibleKeys.add(key);
+
+              // --- CHANGE 3: Selective Fetching ---
+              // We only trigger a network fetch if this is our Target Level.
+              // For parent levels (fallback), we only show them if they are ALREADY in cache.
+              const shouldFetch = (level === targetLevel);
+              
+              this.syncTileSprite(tile, key, shouldFetch);
+            }
           }
         }
 
-        // Cleanup: Remove sprites that are no longer visible
+        // Cleanup: Remove sprites that are no longer part of our stack
+        // (e.g. extremely high res tiles from previous zoom that are now too small to matter)
         for (const [key, data] of this.tiles.entries()) {
           if (!newVisibleKeys.has(key) && data.sprite) {
-             data.sprite.visible = false;
+            data.sprite.visible = false;
           }
         }
       }
 
-      syncTileSprite(tile, key) {
+      syncTileSprite(tile, key, shouldFetch) {
         let cached = this.tiles.get(key);
 
         if (!cached) {
-          // Initialize cache entry and fetch
-          this.tiles.set(key, { loading: true, sprite: null, texture: null });
-          this.fetchTile(tile, key);
+          if (shouldFetch) {
+            // Initialize cache entry and fetch
+            this.tiles.set(key, { loading: true, sprite: null, texture: null, level: tile.level });
+            this.fetchTile(tile, key);
+          }
           return;
         }
 
         if (cached.texture && !cached.sprite) {
-           // Create sprite if we have texture but no sprite yet
-           const sprite = new PIXI.Sprite(cached.texture);
-           this.tileContainer.addChild(sprite);
-           cached.sprite = sprite;
+          const sprite = new PIXI.Sprite(cached.texture);
+          this.tileContainer.addChild(sprite);
+          cached.sprite = sprite;
         }
 
         if (cached.sprite) {
-           // Position and scale sprite
-           cached.sprite.visible = true;
-           // The sprite position in local image space (unscaled by this.scale, but scaled by Tile Size)
-           cached.sprite.x = tile.tx * tile.effectiveTileSize;
-           cached.sprite.y = tile.ty * tile.effectiveTileSize;
-           
-           // The texture itself is small (e.g. 256px), but it represents a large area (effectiveTileSize)
-           // We scale the sprite up to fill that area
-           const scaleFactor = Math.pow(2, tile.level);
-           cached.sprite.width = tile.tileWidth * scaleFactor;
-           cached.sprite.height = tile.tileHeight * scaleFactor;
+          cached.sprite.visible = true;
+          cached.sprite.x = tile.tx * tile.effectiveTileSize;
+          cached.sprite.y = tile.ty * tile.effectiveTileSize;
+          
+          const scaleFactor = Math.pow(2, tile.level);
+          cached.sprite.width = tile.tileWidth * scaleFactor;
+          cached.sprite.height = tile.tileHeight * scaleFactor;
+
+          // --- CHANGE 4: Z-Index based on Quality ---
+          // Higher Quality (Lower Level) = Higher Z-Index (On Top)
+          // MaxZoom (4) - Level (4) = 0 (Bottom)
+          // MaxZoom (4) - Level (0) = 4 (Top)
+          cached.sprite.zIndex = this.maxZoomLevel - tile.level;
         }
       }
 
       uint16ToTexture(uint16Data, width, height) {
-        // Create a temporary canvas to generate the texture
-        // Note: For high performance apps, use PIXI.BufferResource directly, 
-        // but keeping canvas approach for simplicity and compatibility with previous logic.
         const bufferCanvas = document.createElement('canvas');
         bufferCanvas.width = width;
         bufferCanvas.height = height;
@@ -249,6 +261,7 @@
         const imageData = ctx.createImageData(width, height);
         const rgba = imageData.data;
 
+        // Simple min/max stretch for visualization
         let min = 0, max = 4000;
         const range = max - min || 1;
 
@@ -273,39 +286,29 @@
           .then(res => res.arrayBuffer())
           .then(buffer => {
             const uint16Data = new Uint16Array(buffer);
-            
-            // Convert to Pixi Texture
             const texture = this.uint16ToTexture(uint16Data, tile.tileWidth, tile.tileHeight);
             
-            // Update cache
             const cached = this.tiles.get(key);
             if(cached) {
                 cached.texture = texture;
                 cached.loading = false;
-
-                // Instead of linearly interpolating, keep 'pixelized' when zoomed in
-                cached.texture.baseTexture.scaleMode = PIXI.SCALE_MODES.NEAREST
-
-                // Trigger an immediate sync to make it appear
-                this.syncTileSprite(tile, key);
+                cached.texture.baseTexture.scaleMode = PIXI.SCALE_MODES.NEAREST;
+                
+                // We pass false to fetch because we know we just fetched it
+                this.syncTileSprite(tile, key, false);
             }
           })
           .catch(err => {
-            console.error('Failed to fetch tile', key, err);
+            // console.error('Failed to fetch tile', key, err);
             this.tiles.delete(key);
-            
-            // fallback for demo purposes if backend isn't running:
-            // generateDummyTile(tile, key); 
           });
       }
 
       updateVisuals(app, state) {
-        // 1. Update Container Transform
         this.container.x = this.x;
         this.container.y = this.y;
         this.container.scale.set(this.scale);
 
-        // 2. Draw Background & Border (using PIXI.Graphics)
         const g = this.bgGraphics;
         g.clear();
         g.beginFill(0x646496, 0.3);
@@ -314,19 +317,14 @@
 
         const o = this.overlayGraphics;
         o.clear();
-        // Selection/Border
         o.lineStyle(2 / (state.scale * this.scale), 0x4a9eff, 1);
         o.drawRect(0, 0, this.width, this.height);
 
-        // Text Label
         this.textLabel.text = `${(this.scale * 100).toFixed(0)}%`;
         this.textLabel.x = 5 / this.scale;
         this.textLabel.y = 20 / this.scale;
-        // Keep text size consistent relative to screen or relative to image?
-        // Original code: constant size relative to image transform. 
         this.textLabel.scale.set(1 / this.scale); 
 
-        // 3. Compute Tiles
         this.computeVisibleTiles(app, state);
       }
     }
@@ -340,24 +338,15 @@
           isDragging: false,
           lastX: 0,
           lastY: 0,
-          pointers: {},
-          pinchStartDistance: 0,
-          pinchStartScale: 1,
           draggableImages: [],
           activeDraggableImage: null
         });
 
-        // Pixi Application
         let app;
         const worldContainer = new PIXI.Container();
 
-        function getPointerDistance(p1, p2) {
-          return Math.hypot(p2.x - p1.x, p2.y - p1.y);
-        }
-
         function addImage(filename) {
           const BASE_URL = 'http://127.0.0.1:8000';
-          
           fetch(BASE_URL + '/file/' + encodeURI(filename))
             .then(res => res.json())
             .then(metadata => {
@@ -365,29 +354,24 @@
                 0, 0, metadata.shape[1], metadata.shape[0],
                 { filename, ...metadata }
               );
-              
               state.draggableImages.push(img);
               worldContainer.addChild(img.container);
             })
-            .catch(err => console.warn("Backend not reachable. Ensure python server is running."));
+            .catch(err => console.warn("Backend error"));
         }
 
-        // Setup Scene
         function setupScene() {
-          // Add 36 images for testing
-          for (let i = 0; i < 9; i++) {
-             // Mock metadata if backend is down, usually logic flows through fetch
-             // But here we just trigger the addImage logic
-             addImage('002_IDv3__aa855_s05_c1.tif');
-          }
-          
-          // Wait a moment for async adds then arrange (dirty hack for demo)
+          // for (let i = 0; i < 9; i++) {
+          addImage('002_IDv3__aa855_s05_c0.tif');
+          addImage('002_IDv3__aa855_s05_c1.tif');
+          addImage('002_IDv3__aa855_s05_c2.tif');
+          addImage('002_IDv3__aa855_s05_c3.tif');
+          // }
           setTimeout(arrangeInGrid, 2000);
         }
 
         function zoomToFitAllImages() {
           if (state.draggableImages.length === 0) return;
-
           let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
           for (const img of state.draggableImages) {
             minX = Math.min(minX, img.x);
@@ -395,74 +379,57 @@
             maxX = Math.max(maxX, img.x + img.width * img.scale);
             maxY = Math.max(maxY, img.y + img.height * img.scale);
           }
-
           if (minX === Infinity) return;
-
           const boundsWidth = maxX - minX;
           const boundsHeight = maxY - minY;
           const padding = 40;
-
           const scaleX = (app.screen.width - padding * 2) / boundsWidth;
           const scaleY = (app.screen.height - padding * 2) / boundsHeight;
           state.scale = Math.min(scaleX, scaleY);
-
           const centerX = (minX + maxX) / 2;
           const centerY = (minY + maxY) / 2;
-          
-          // Center in screen
           state.offsetX = app.screen.width / 2 - centerX * state.scale;
           state.offsetY = app.screen.height / 2 - centerY * state.scale;
         }
 
         function arrangeInGrid() {
           if (state.draggableImages.length === 0) return;
-
           const padding = 50;
           const images = state.draggableImages;
           const cols = Math.ceil(Math.sqrt(images.length));
           const colWidths = [];
           const rowHeights = [];
-
-          // 1. Measure
           for (let i = 0; i < images.length; i++) {
             const col = i % cols;
             const row = Math.floor(i / cols);
             const img = images[i];
             const w = img.width * img.scale;
             const h = img.height * img.scale;
-
             colWidths[col] = Math.max(colWidths[col] || 0, w);
             rowHeights[row] = Math.max(rowHeights[row] || 0, h);
           }
-
-          // 2. Position
           for (let i = 0; i < images.length; i++) {
             const col = i % cols;
             const row = Math.floor(i / cols);
             const img = images[i];
-
             let x = 0;
             for (let c = 0; c < col; c++) x += colWidths[c] + padding;
-
             let y = 0;
             for (let r = 0; r < row; r++) y += rowHeights[r] + padding;
-
             img.x = x;
             img.y = y;
           }
-
           zoomToFitAllImages();
         }
 
         function screenToWorld(screenX, screenY) {
-           return {
-             wx: (screenX - state.offsetX) / state.scale,
-             wy: (screenY - state.offsetY) / state.scale
-           };
+          return {
+            wx: (screenX - state.offsetX) / state.scale,
+            wy: (screenY - state.offsetY) / state.scale
+          };
         }
 
         onMounted(() => {
-          // Initialize Pixi
           app = new PIXI.Application({
             resizeTo: document.getElementById('app'),
             backgroundColor: 0x2c2c34,
@@ -471,28 +438,19 @@
             autoDensity: true
           });
           document.getElementById('app').appendChild(app.view);
-          
           app.stage.addChild(worldContainer);
 
-          // Interaction Handlers (Mouse/Touch)
           const view = app.view;
-
           view.addEventListener('contextmenu', e => e.preventDefault());
-
           view.addEventListener('mousedown', e => {
             const { wx, wy } = screenToWorld(e.clientX, e.clientY);
-
-            // Middle mouse pan
             if (e.button == 1 || (e.button == 0 && e.altKey)) {
               state.isDragging = true;
               state.lastX = e.clientX;
               state.lastY = e.clientY;
               return;
             }
-
-            // Hit test images
             if (e.button == 0) {
-              // Iterate in reverse to hit top-most first
               for (let i = state.draggableImages.length - 1; i >= 0; i--) {
                 const img = state.draggableImages[i];
                 if (img.containsPoint(wx, wy)) {
@@ -500,8 +458,6 @@
                   img.isDragging = true;
                   img.dragLastX = e.clientX;
                   img.dragLastY = e.clientY;
-                  
-                  // Move to top of display stack
                   worldContainer.removeChild(img.container);
                   worldContainer.addChild(img.container);
                   break;
@@ -511,7 +467,6 @@
           });
 
           window.addEventListener('mousemove', e => {
-            // Pan World
             if (state.isDragging) {
               const dx = e.clientX - state.lastX;
               const dy = e.clientY - state.lastY;
@@ -520,16 +475,12 @@
               state.lastX = e.clientX;
               state.lastY = e.clientY;
             }
-
-            // Drag Image
             if (state.activeDraggableImage) {
               const img = state.activeDraggableImage;
               const dx = e.clientX - img.dragLastX;
               const dy = e.clientY - img.dragLastY;
-
               img.x += dx / state.scale;
               img.y += dy / state.scale;
-
               img.dragLastX = e.clientX;
               img.dragLastY = e.clientY;
             }
@@ -543,59 +494,42 @@
             }
           });
 
-          // Zoom
           view.addEventListener('wheel', e => {
             e.preventDefault();
-            
             if (e.ctrlKey) {
-              const zoomIntensity = 0.002; // Adjusted for Pixi sensitivity
+              const zoomIntensity = 0.002; 
               const delta = -e.deltaY;
               const newScale = Math.max(0.01, state.scale * (1 + delta * zoomIntensity));
-
               const rect = view.getBoundingClientRect();
               const mx = e.clientX - rect.left;
               const my = e.clientY - rect.top;
-
-              // Zoom towards mouse pointer logic
               state.offsetX -= (mx - state.offsetX) * (newScale / state.scale - 1);
               state.offsetY -= (my - state.offsetY) * (newScale / state.scale - 1);
-
               state.scale = newScale;
             } else {
-              // Pan with wheel
               state.offsetX -= e.deltaX;
               state.offsetY -= e.deltaY;
             }
           }, { passive: false });
 
-          // Keyboard
           window.addEventListener('keydown', e => {
             if (e.code === 'KeyF') zoomToFitAllImages();
             if (e.code === 'KeyG') arrangeInGrid();
           });
-          
           document.getElementById('fit-btn').addEventListener('click', zoomToFitAllImages);
           document.getElementById('grid-btn').addEventListener('click', arrangeInGrid);
 
-          // Setup Data
           setupScene();
 
-          // Ticker: Sync State -> Pixi Scene
           app.ticker.add(() => {
-             // 1. Sync World Container
-             worldContainer.x = state.offsetX;
-             worldContainer.y = state.offsetY;
-             worldContainer.scale.set(state.scale);
-
-             // 2. Sync Images
-             state.draggableImages.forEach(img => img.updateVisuals(app, state));
-
-             // 3. Update HUD
-             const zoomLabel = document.getElementById('zoom-label');
-             if (zoomLabel) zoomLabel.textContent = `${(state.scale * 100).toFixed(0)}%`;
+            worldContainer.x = state.offsetX;
+            worldContainer.y = state.offsetY;
+            worldContainer.scale.set(state.scale);
+            state.draggableImages.forEach(img => img.updateVisuals(app, state));
+            const zoomLabel = document.getElementById('zoom-label');
+            if (zoomLabel) zoomLabel.textContent = `${(state.scale * 100).toFixed(0)}%`;
           });
         });
-
         return {};
       }
     }).mount('#app');

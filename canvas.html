@@ -168,7 +168,7 @@
        * The core rendering logic. Determines which tiles are visible based on 
        * the current zoom level and viewport, then adds/removes sprites.
        * Implements "Painter's Algorithm": draws low-res tiles first, then high-res on top.
-       * * @param {PIXI.Application} app - The main Pixi app instance.
+       * @param {PIXI.Application} app - The main Pixi app instance.
        * @param {Object} state - The global Viewport state (offsetX, offsetY, scale).
        */
       computeVisibleTiles(app, state) {
@@ -412,6 +412,7 @@
             requestAnimationFrame(() => {
               renderScene();
               renderPending = false;
+              console.log('rendering...')
             });
           }
         }
@@ -466,9 +467,10 @@
          * Bootstraps the demo scene with dummy images.
          */
         function setupScene() {
-          for (let i = 0; i < 9; i++) {
-            addImage('002_IDv3__aa855_s05_c1.tif');
-          }
+          addImage('002_IDv3__aa855_s05_c0.tif');
+          addImage('002_IDv3__aa855_s05_c1.tif');
+          addImage('002_IDv3__aa855_s05_c2.tif');
+          addImage('002_IDv3__aa855_s05_c3.tif');
           // Delay grid arrangement to allow metadata fetches to complete
           setTimeout(arrangeInGrid, 2000);
         }
@@ -503,6 +505,8 @@
           const centerY = (minY + maxY) / 2;
           state.offsetX = app.screen.width / 2 - centerX * state.scale;
           state.offsetY = app.screen.height / 2 - centerY * state.scale;
+
+          requestRender()
         }
 
         /**
@@ -684,7 +688,7 @@
           
           // Watcher: Auto-render when reactive state changes
           watch(state, () => {
-            requestRender();
+            // requestRender();
           }, { deep: true });
 
           // Initial Draw

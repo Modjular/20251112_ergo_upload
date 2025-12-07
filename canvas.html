@@ -94,11 +94,11 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.3.2/pixi.min.js"></script>
 
   <script>
-    const { createApp, onMounted, reactive } = Vue;
+    const { createApp, onMounted, reactive, watch } = Vue;
 
     class DraggableImage {
-      constructor(x, y, width, height, metadata, tileSize = 256, maxZoomLevel = 4) {
-        // State
+      // CHANGE: We now pass 'onRequestRender' callback to the constructor
+      constructor(x, y, width, height, metadata, onRequestRender, tileSize = 256, maxZoomLevel = 4) {
         this.x = x;
         this.y = y;
         this.scale = 1;
@@ -107,24 +107,21 @@
         this.metadata = metadata;
         this.tileSize = tileSize;
         this.maxZoomLevel = maxZoomLevel;
+        
+        // Store the callback so we can request a redraw when a tile loads
+        this.onRequestRender = onRequestRender;
 
         this.isDragging = false;
         this.dragLastX = 0;
         this.dragLastY = 0;
 
-        // Cache
-        this.tiles = new Map(); // key -> { texture, sprite, loading, level }
+        this.tiles = new Map(); 
         
-        // Pixi Containers
         this.container = new PIXI.Container();
-        
-        // Layers
         this.bgGraphics = new PIXI.Graphics();
         this.tileContainer = new PIXI.Container();
         this.overlayGraphics = new PIXI.Graphics();
         
-        // --- CHANGE 1: Enable Z-Indexing ---
-        // This allows us to ensure High Res tiles sit ON TOP of Low Res tiles
         this.tileContainer.sortableChildren = true;
 
         this.container.addChild(this.bgGraphics);
@@ -147,11 +144,9 @@
       computeVisibleTiles(app, state) {
         const worldScale = state.scale * this.scale;
         
-        // 1. Calculate the IDEAL level (target resolution)
         let targetLevel = Math.floor(Math.log2(1 / worldScale));
         targetLevel = Math.min(Math.max(targetLevel, 0), this.maxZoomLevel);
 
-        // Viewport Calculations (Project screen bounds to image local space)
         const viewportX = -state.offsetX / state.scale;
         const viewportY = -state.offsetY / state.scale;
         const viewportW = app.screen.width / state.scale;
@@ -169,14 +164,9 @@
 
         const newVisibleKeys = new Set();
 
-        // --- CHANGE 2: The Fallback Loop ---
-        // Iterate from the Target Level (High Res) up to Max Level (Low Res).
-        // We calculate visible tiles for ALL these layers.
         for (let level = targetLevel; level <= this.maxZoomLevel; level++) {
           
           const effectiveTileSize = this.tileSize * Math.pow(2, level);
-
-          // Calculate tile indices for this specific level
           const tx0 = Math.floor(cx0 / effectiveTileSize);
           const ty0 = Math.floor(cy0 / effectiveTileSize);
           const tx1 = Math.floor(cx1 / effectiveTileSize);
@@ -188,7 +178,6 @@
               const tileX0 = tx * effectiveTileSize;
               const tileY0 = ty * effectiveTileSize;
               
-              // Dimensions for this specific LOD
               const tileWidth = Math.round(Math.min(effectiveTileSize, this.width - tileX0) / Math.pow(2, level));
               const tileHeight = Math.round(Math.min(effectiveTileSize, this.height - tileY0) / Math.pow(2, level));
 
@@ -199,18 +188,12 @@
               
               newVisibleKeys.add(key);
 
-              // --- CHANGE 3: Selective Fetching ---
-              // We only trigger a network fetch if this is our Target Level.
-              // For parent levels (fallback), we only show them if they are ALREADY in cache.
               const shouldFetch = (level === targetLevel);
-              
               this.syncTileSprite(tile, key, shouldFetch);
             }
           }
         }
 
-        // Cleanup: Remove sprites that are no longer part of our stack
-        // (e.g. extremely high res tiles from previous zoom that are now too small to matter)
         for (const [key, data] of this.tiles.entries()) {
           if (!newVisibleKeys.has(key) && data.sprite) {
             data.sprite.visible = false;
@@ -223,7 +206,6 @@
 
         if (!cached) {
           if (shouldFetch) {
-            // Initialize cache entry and fetch
             this.tiles.set(key, { loading: true, sprite: null, texture: null, level: tile.level });
             this.fetchTile(tile, key);
           }
@@ -244,11 +226,6 @@
           const scaleFactor = Math.pow(2, tile.level);
           cached.sprite.width = tile.tileWidth * scaleFactor;
           cached.sprite.height = tile.tileHeight * scaleFactor;
-
-          // --- CHANGE 4: Z-Index based on Quality ---
-          // Higher Quality (Lower Level) = Higher Z-Index (On Top)
-          // MaxZoom (4) - Level (4) = 0 (Bottom)
-          // MaxZoom (4) - Level (0) = 4 (Top)
           cached.sprite.zIndex = this.maxZoomLevel - tile.level;
         }
       }
@@ -261,7 +238,6 @@
         const imageData = ctx.createImageData(width, height);
         const rgba = imageData.data;
 
-        // Simple min/max stretch for visualization
         let min = 0, max = 4000;
         const range = max - min || 1;
 
@@ -296,11 +272,15 @@
                 
                 // We pass false to fetch because we know we just fetched it
                 this.syncTileSprite(tile, key, false);
+                
+                // CHANGE: Trigger the scene redraw now that texture is ready
+                this.onRequestRender();
             }
           })
           .catch(err => {
-            // console.error('Failed to fetch tile', key, err);
             this.tiles.delete(key);
+            // Even on error, we might want to redraw (e.g. to remove a loading indicator)
+            this.onRequestRender();
           });
       }
 
@@ -344,29 +324,72 @@
 
         let app;
         const worldContainer = new PIXI.Container();
+        
+        //
+        // --- RENDER MANAGER ---
+        //
+
+        let renderPending = false;
+
+        // This function acts as the "Gatekeeper" for the GPU.
+        // Logic: 
+        // 1. If 'renderPending' is true, a frame is already scheduled. Do nothing.
+        // 2. If false, set it to true and schedule a render for the next animation frame.
+        // Benefit: 
+        // If 50 tiles load in 10ms, we don't draw 50 times. We draw once at the end of the frame.
+        function requestRender() {
+          if (renderPending) return
+          renderPending = true;
+          requestAnimationFrame(() => {
+            renderScene();
+            renderPending = false;
+          });
+        }
+
+        function renderScene() {
+          if (!app) return;
+          
+          // 1. Sync World Container
+          worldContainer.x = state.offsetX;
+          worldContainer.y = state.offsetY;
+          worldContainer.scale.set(state.scale);
+
+          // 2. Sync Images
+          state.draggableImages.forEach(img => img.updateVisuals(app, state));
+
+          // 3. Render
+          app.renderer.render(app.stage);
+
+          // 4. Update HUD
+          const zoomLabel = document.getElementById('zoom-label');
+          if (zoomLabel) zoomLabel.textContent = `${(state.scale * 100).toFixed(0)}%`;
+        }
 
         function addImage(filename) {
           const BASE_URL = 'http://127.0.0.1:8000';
           fetch(BASE_URL + '/file/' + encodeURI(filename))
             .then(res => res.json())
             .then(metadata => {
+              // Pass the requestRender callback to the image
               const img = new DraggableImage(
                 0, 0, metadata.shape[1], metadata.shape[0],
-                { filename, ...metadata }
+                { filename, ...metadata },
+                requestRender
               );
               state.draggableImages.push(img);
               worldContainer.addChild(img.container);
+              
+              // Trigger render to show new empty placeholder
+              requestRender();
             })
             .catch(err => console.warn("Backend error"));
         }
 
         function setupScene() {
-          // for (let i = 0; i < 9; i++) {
           addImage('002_IDv3__aa855_s05_c0.tif');
           addImage('002_IDv3__aa855_s05_c1.tif');
           addImage('002_IDv3__aa855_s05_c2.tif');
           addImage('002_IDv3__aa855_s05_c3.tif');
-          // }
           setTimeout(arrangeInGrid, 2000);
         }
 
@@ -435,13 +458,15 @@
             backgroundColor: 0x2c2c34,
             antialias: true,
             resolution: window.devicePixelRatio || 1,
-            autoDensity: true
+            autoDensity: true,
+            autoStart: false // CHANGE: Disable automatic render loop
           });
           document.getElementById('app').appendChild(app.view);
           app.stage.addChild(worldContainer);
 
           const view = app.view;
           view.addEventListener('contextmenu', e => e.preventDefault());
+          
           view.addEventListener('mousedown', e => {
             const { wx, wy } = screenToWorld(e.clientX, e.clientY);
             if (e.button == 1 || (e.button == 0 && e.altKey)) {
@@ -460,6 +485,7 @@
                   img.dragLastY = e.clientY;
                   worldContainer.removeChild(img.container);
                   worldContainer.addChild(img.container);
+                  requestRender(); // CHANGE: Request render on selection change
                   break;
                 }
               }
@@ -467,6 +493,7 @@
           });
 
           window.addEventListener('mousemove', e => {
+            let dirty = false;
             if (state.isDragging) {
               const dx = e.clientX - state.lastX;
               const dy = e.clientY - state.lastY;
@@ -474,6 +501,7 @@
               state.offsetY += dy;
               state.lastX = e.clientX;
               state.lastY = e.clientY;
+              dirty = true;
             }
             if (state.activeDraggableImage) {
               const img = state.activeDraggableImage;
@@ -483,7 +511,11 @@
               img.y += dy / state.scale;
               img.dragLastX = e.clientX;
               img.dragLastY = e.clientY;
+              dirty = true;
             }
+            // CHANGE: Only request render if we actually moved something
+            // (Though Vue watch will likely catch this too, explicitly calling here is safe)
+            if(dirty) requestRender();
           });
 
           window.addEventListener('mouseup', () => {
@@ -510,6 +542,9 @@
               state.offsetX -= e.deltaX;
               state.offsetY -= e.deltaY;
             }
+            // CHANGE: Wheel changes state, which triggers render via Watch, 
+            // but calling requestRender here ensures immediate responsiveness.
+            requestRender();
           }, { passive: false });
 
           window.addEventListener('keydown', e => {
@@ -518,17 +553,24 @@
           });
           document.getElementById('fit-btn').addEventListener('click', zoomToFitAllImages);
           document.getElementById('grid-btn').addEventListener('click', arrangeInGrid);
+          
+          // CHANGE: Handle Window Resize
+          window.addEventListener('resize', () => {
+            app.renderer.resize(document.getElementById('app').offsetWidth, document.getElementById('app').offsetHeight);
+            requestRender();
+          });
 
           setupScene();
+          
+          // CHANGE: Vue Watcher to auto-trigger render on state change
+          // deep: true allows us to catch changes inside the objects if needed, 
+          // though strictly we are mostly changing top-level props here.
+          watch(state, () => {
+            requestRender();
+          }, { deep: true });
 
-          app.ticker.add(() => {
-            worldContainer.x = state.offsetX;
-            worldContainer.y = state.offsetY;
-            worldContainer.scale.set(state.scale);
-            state.draggableImages.forEach(img => img.updateVisuals(app, state));
-            const zoomLabel = document.getElementById('zoom-label');
-            if (zoomLabel) zoomLabel.textContent = `${(state.scale * 100).toFixed(0)}%`;
-          });
+          // Initial Draw
+          requestRender();
         });
         return {};
       }

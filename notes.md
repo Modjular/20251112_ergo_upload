@@ -67,3 +67,13 @@ TODO:
  - Global TileFetchManager for priority queuing
  - Prioritize tile fetching by distance-from-screen-center and Level
  - Limit concurrency so that higher-priority tiles can get into the queue
+
+
+### 12/10/25
+I've been chewing on what to tackle next.
+ 1. UI: On hover or context-click, reveal a menu like FigJam does.
+ 2. "Chrome tabs": Can multiple images be imposed, one on another? More of a PIXI question. But important since we want multiple channels and labels viewable.
+ 3. HTML UI for the contrast slider.
+
+**Multi-Selection**
+Once again, it gave good, working code and the only errors were mine. However, it didn't accout for 'backwards' selection (when xy1 and xy2 need to swap) and the tiles don't become 'selected', but thats a small visual issue.

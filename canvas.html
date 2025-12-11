@@ -122,6 +122,7 @@
         this.tileSize = tileSize;
         this.maxZoomLevel = maxZoomLevel;
         this.lodBias = lodBias;
+        this.selected = false
 
         // Callback to the main render loop
         this.onRequestRender = onRequestRender;
@@ -371,9 +372,12 @@
         // Draw Selection Border
         const o = this.overlayGraphics;
         o.clear();
+
         // Keep line width consistent regardless of zoom
-        o.lineStyle(2 / (state.scale * this.scale), 0x4a9eff, 1);
-        o.drawRect(0, 0, this.width, this.height);
+        if (this.selected) {
+          o.lineStyle(2 / (state.scale * this.scale), 0x4a9eff, 1);
+          o.drawRect(0, 0, this.width, this.height);
+        }
 
         // Update Text Label
         this.textLabel.text = `${(this.scale * 100).toFixed(0)}%`;
@@ -392,16 +396,38 @@
           offsetX: 0,
           offsetY: 0,
           scale: 1,
-          isDragging: false,
-          lastX: 0,
-          lastY: 0,
+          
+          // Camera Panning State
+          isPanning: false,
+          panStart: { x: 0, y: 0 },
+
+          // Selection / Image Drag State
+          selection: new Set(), // Set of DraggableImage instances
+          isDraggingImages: false,
+          dragStart: { x: 0, y: 0 }, // Mouse position where drag started
+
+          // Box Selection State
+          selectionBox: {
+            active: false,
+            startX: 0, startY: 0,
+            width: 0, height: 0
+          },
+          
           draggableImages: [],
-          activeDraggableImage: null
         });
 
         let app;
         const worldContainer = new PIXI.Container();
         let renderPending = false;
+
+        // Helper: Axis-Aligned Bounding Box (AABB) Intersection
+        // Used to check if an image is inside the drag-select box
+        function rectsIntersect(r1, r2) {
+          return !(r2.x > r1.x + r1.w || 
+                  r2.x + r2.w < r1.x || 
+                  r2.y > r1.y + r1.h || 
+                  r2.y + r2.h < r1.y);
+        }
 
         /**
          * The "Render Manager". 
@@ -577,6 +603,25 @@
           document.getElementById('app').appendChild(app.view);
           app.stage.addChild(worldContainer);
 
+          const selectionBoxGraphics = new PIXI.Graphics();
+          app.stage.addChild(selectionBoxGraphics)
+
+          function drawSelectionBox() {
+            const g = selectionBoxGraphics;
+            g.clear();
+            if (!state.selectionBox.active) return;
+
+            g.beginFill(0x4a9eff, 0.2); // Semi-transparent blue
+            g.lineStyle(1, 0x4a9eff, 0.8);
+            g.drawRect(
+              state.selectionBox.startX, 
+              state.selectionBox.startY, 
+              state.selectionBox.width, 
+              state.selectionBox.height
+            );
+            g.endFill();
+          }
+
           const view = app.view;
           
           // Input Handling
@@ -586,67 +631,169 @@
           view.addEventListener('mousedown', e => {
             const { wx, wy } = screenToWorld(e.clientX, e.clientY);
             
-            // Middle Click or Alt+Click -> Pan Camera
-            if (e.button == 1 || (e.button == 0 && e.altKey)) {
-              state.isDragging = true;
-              state.lastX = e.clientX;
-              state.lastY = e.clientY;
+            // 1. Camera Pan (Middle Click or Alt+Click)
+            if (e.button === 1 || (e.button === 0 && e.altKey)) {
+              state.isPanning = true;
+              state.panStart = { x: e.clientX, y: e.clientY };
               return;
             }
 
-            // Left Click -> Select Image
-            if (e.button == 0) {
-              // Reverse loop to check top-most images first
+            // 2. Left Click
+            if (e.button === 0) {
+              let clickedImage = null;
+
+              // Hit Test (Top-most image first)
               for (let i = state.draggableImages.length - 1; i >= 0; i--) {
                 const img = state.draggableImages[i];
                 if (img.containsPoint(wx, wy)) {
-                  state.activeDraggableImage = img;
-                  img.isDragging = true;
-                  img.dragLastX = e.clientX;
-                  img.dragLastY = e.clientY;
-                  // Move to top of display stack
-                  worldContainer.removeChild(img.container);
-                  worldContainer.addChild(img.container);
-                  requestRender(); 
+                  clickedImage = img;
                   break;
                 }
               }
+
+              if (clickedImage) {
+                // --- Scenario A: Clicked an Image ---
+                
+                const isMultiSelect = e.metaKey || e.ctrlKey;
+                const isAlreadySelected = state.selection.has(clickedImage);
+
+                if (isMultiSelect) {
+                  // Toggle selection
+                  if (isAlreadySelected) state.selection.delete(clickedImage);
+                  else state.selection.add(clickedImage);
+                } else {
+                  // Standard click
+                  // If clicking an unselected item, clear others and select this one.
+                  // If clicking an ALREADY selected item, don't clear (user might be starting a drag of the group).
+                  if (!isAlreadySelected) {
+                    state.selection.clear();
+                    state.selection.add(clickedImage);
+                  }
+                }
+
+                // Prepare for Dragging
+                state.isDraggingImages = true;
+                state.dragStart = { x: e.clientX, y: e.clientY };
+
+                // Bring selected items to front visually
+                state.selection.forEach(img => {
+                  worldContainer.removeChild(img.container);
+                  worldContainer.addChild(img.container);
+                });
+
+              } else {
+                // --- Scenario B: Clicked Empty Space ---
+                
+                // Clear selection unless Shift/Cmd is held (optional standard behavior)
+                if (!e.metaKey && !e.ctrlKey) {
+                  state.selection.clear();
+                }
+
+                // Start Box Selection
+                state.selectionBox.active = true;
+                state.selectionBox.startX = e.clientX;
+                state.selectionBox.startY = e.clientY;
+                state.selectionBox.width = 0;
+                state.selectionBox.height = 0;
+              }
+              
+              requestRender();
             }
           });
 
           // Mouse Move: Dragging Logic
           window.addEventListener('mousemove', e => {
             let dirty = false;
-            // Camera Pan
-            if (state.isDragging) {
-              const dx = e.clientX - state.lastX;
-              const dy = e.clientY - state.lastY;
+
+            // 1. Camera Pan
+            if (state.isPanning) {
+              const dx = e.clientX - state.panStart.x;
+              const dy = e.clientY - state.panStart.y;
               state.offsetX += dx;
               state.offsetY += dy;
-              state.lastX = e.clientX;
-              state.lastY = e.clientY;
+              state.panStart = { x: e.clientX, y: e.clientY };
               dirty = true;
             }
-            // Image Drag
-            if (state.activeDraggableImage) {
-              const img = state.activeDraggableImage;
-              const dx = e.clientX - img.dragLastX;
-              const dy = e.clientY - img.dragLastY;
-              img.x += dx / state.scale;
-              img.y += dy / state.scale;
-              img.dragLastX = e.clientX;
-              img.dragLastY = e.clientY;
+
+            // 2. Image Drag (Move all selected items)
+            if (state.isDraggingImages && state.selection.size > 0) {
+              const dx = e.clientX - state.dragStart.x;
+              const dy = e.clientY - state.dragStart.y;
+
+              // Convert screen delta to world delta
+              const worldDx = dx / state.scale;
+              const worldDy = dy / state.scale;
+
+              state.selection.forEach(img => {
+                img.x += worldDx;
+                img.y += worldDy;
+              });
+
+              state.dragStart = { x: e.clientX, y: e.clientY };
               dirty = true;
             }
-            if(dirty) requestRender();
+
+            // 3. Box Selection
+            if (state.selectionBox.active) {
+              const currentX = e.clientX;
+              const currentY = e.clientY;
+              
+              // Calculate width/height (allowing for negative drags)
+              state.selectionBox.width = currentX - state.selectionBox.startX;
+              state.selectionBox.height = currentY - state.selectionBox.startY;
+              
+              // Draw the box immediately
+              drawSelectionBox();
+              dirty = true;
+            }
+
+            if (dirty) requestRender();
           });
 
           // Mouse Up: End Dragging
           window.addEventListener('mouseup', () => {
-            state.isDragging = false;
-            if (state.activeDraggableImage) {
-              state.activeDraggableImage.isDragging = false;
-              state.activeDraggableImage = null;
+            // End Pan/Drag
+            state.isPanning = false;
+            state.isDraggingImages = false;
+
+            // End Box Selection & Calculate Hits
+            if (state.selectionBox.active) {
+              // 1. Normalize Screen Box (handle negative width/height)
+              const sx = state.selectionBox.width > 0 ? state.selectionBox.startX : state.selectionBox.startX + state.selectionBox.width;
+              const sy = state.selectionBox.height > 0 ? state.selectionBox.startY : state.selectionBox.startY + state.selectionBox.height;
+              const sw = Math.abs(state.selectionBox.width);
+              const sh = Math.abs(state.selectionBox.height);
+
+              // 2. Convert to World Coordinates
+              // (Top-left and Bottom-right corners)
+              const tl = screenToWorld(sx, sy);
+              const br = screenToWorld(sx + sw, sy + sh);
+              
+              const worldBox = {
+                x: tl.wx,
+                y: tl.wy,
+                w: br.wx - tl.wx,
+                h: br.wy - tl.wy
+              };
+
+              // 3. Find Intersections
+              state.draggableImages.forEach(img => {
+                const imgBox = {
+                  x: img.x,
+                  y: img.y,
+                  w: img.width * img.scale,
+                  h: img.height * img.scale
+                };
+
+                if (rectsIntersect(worldBox, imgBox)) {
+                  state.selection.add(img);
+                }
+              });
+
+              // Reset Box
+              state.selectionBox.active = false;
+              selectionBoxGraphics.clear();
+              requestRender();
             }
           });
 
@@ -697,6 +844,13 @@
             // causing an infinite loop. I suspect a cycle somewhere.
             // requestRender();
           }, { deep: true });
+
+          // Watch ONLY the active image reference
+          watch(() => state.activeDraggableImage, (newImg, oldImg) => {
+            if (oldImg) oldImg.selected = false
+            if (newImg) newImg.selected = true
+            requestRender();
+          });
 
           // Initial Draw
           requestRender();

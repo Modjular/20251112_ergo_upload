@@ -610,14 +610,17 @@
             g.clear();
             if (!state.selectionBox.active) return;
 
+            const { startX, startY, width, height } = state.selectionBox
+
+            // Normalize coordinates to handle negative width/height
+            const x = width < 0 ? startX + width : startX;
+            const y = height < 0 ? startY + height : startY;
+            const w = Math.abs(width);
+            const h = Math.abs(height);
+
             g.beginFill(0x4a9eff, 0.2); // Semi-transparent blue
             g.lineStyle(1, 0x4a9eff, 0.8);
-            g.drawRect(
-              state.selectionBox.startX, 
-              state.selectionBox.startY, 
-              state.selectionBox.width, 
-              state.selectionBox.height
-            );
+            g.drawRect(x, y, w, h);
             g.endFill();
           }
 

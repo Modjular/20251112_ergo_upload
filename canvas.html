@@ -75,6 +75,41 @@
     .hud-btn:hover {
       background: rgba(0, 0, 0, 0.8);
     }
+
+    /* Context Popup Bar - FigJam style */
+    .context-popup-bar {
+      position: absolute;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 6px 8px;
+      background: #2c2c34;
+      border-radius: 8px;
+      box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.1);
+      pointer-events: auto;
+      transform: translateX(-50%);
+      z-index: 20;
+    }
+
+    .context-popup-bar.hidden {
+      display: none;
+    }
+
+    .context-popup-bar button {
+      background: transparent;
+      border: none;
+      color: #fff;
+      padding: 6px 12px;
+      border-radius: 4px;
+      font-family: sans-serif;
+      font-size: 13px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .context-popup-bar button:hover {
+      background: rgba(255, 255, 255, 0.1);
+    }
   </style>
 </head>
 <body>
@@ -86,6 +121,9 @@
       <div class="hud-bottom-right">
         <button id="grid-btn" class="hud-btn">Grid (G)</button>
         <button id="fit-btn" class="hud-btn">Fit All (F)</button>
+      </div>
+      <div id="context-popup-bar" class="context-popup-bar hidden">
+        <button id="popup-action-btn">Action</button>
       </div>
     </viewport-hud>
   </div>
@@ -465,6 +503,61 @@
           // 4. Update DOM HUD
           const zoomLabel = document.getElementById('zoom-label');
           if (zoomLabel) zoomLabel.textContent = `${(state.scale * 100).toFixed(0)}%`;
+
+          // 5. Update Context Popup Bar
+          updateContextPopupBar();
+        }
+
+        /**
+         * Updates the position and visibility of the context popup bar.
+         * Shows above the selection bounding box, clamped to viewport.
+         */
+        function updateContextPopupBar() {
+          const popupBar = document.getElementById('context-popup-bar');
+          if (!popupBar) return;
+
+          // Hide if nothing selected
+          if (state.selection.size === 0) {
+            popupBar.classList.add('hidden');
+            return;
+          }
+
+          // Calculate bounding box of all selected items in world coords
+          let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+          for (const img of state.selection) {
+            minX = Math.min(minX, img.x);
+            minY = Math.min(minY, img.y);
+            maxX = Math.max(maxX, img.x + img.width * img.scale);
+            maxY = Math.max(maxY, img.y + img.height * img.scale);
+          }
+
+          // Convert world coords to screen coords
+          const screenMinX = minX * state.scale + state.offsetX;
+          const screenMaxX = maxX * state.scale + state.offsetX;
+          const screenMinY = minY * state.scale + state.offsetY;
+
+          // Position: centered horizontally, above selection
+          const barWidth = popupBar.offsetWidth;
+          const barHeight = popupBar.offsetHeight;
+          const padding = 12;
+          const gapAboveSelection = 8;
+
+          let x = (screenMinX + screenMaxX) / 2;
+          let y = screenMinY - gapAboveSelection - barHeight;
+
+          // Clamp to viewport bounds
+          const viewWidth = window.innerWidth;
+          const viewHeight = window.innerHeight;
+
+          // Horizontal clamping (account for transform: translateX(-50%))
+          x = Math.max(barWidth / 2 + padding, Math.min(viewWidth - barWidth / 2 - padding, x));
+          
+          // Vertical clamping
+          y = Math.max(padding, Math.min(viewHeight - barHeight - padding, y));
+
+          popupBar.style.left = `${x}px`;
+          popupBar.style.top = `${y}px`;
+          popupBar.classList.remove('hidden');
         }
 
         /**

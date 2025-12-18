@@ -94,7 +94,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.3.2/pixi.min.js"></script>
 
   <script>
-    const { createApp, onMounted, reactive, watch } = Vue;
+    const { createApp, onMounted, reactive, watch, watchEffect } = Vue;
 
     /**
      * Represents a single high-resolution scientific image on the canvas.
@@ -440,7 +440,6 @@
             requestAnimationFrame(() => {
               renderScene();
               renderPending = false;
-              console.log('rendering...')
             });
           }
         }
@@ -838,19 +837,24 @@
           // Initialize Data
           setupScene();
           
+          // TODO { deep: true } causes MASSIVE lag, because its activating even on coord change
           // Watcher: Auto-render when reactive state changes
-          watch(state, () => {
-            // TODO: FIX this watcher. For some reason it keeps detecting changes,
-            // causing an infinite loop. I suspect a cycle somewhere.
-            // requestRender();
-          }, { deep: true });
+          // watch(state, () => {
+          //   // TODO: FIX this watcher. For some reason it keeps detecting changes,
+          //   // causing an infinite loop. I suspect a cycle somewhere.
+          //   requestRender();
+          // }, { deep: true });
 
           // Watch ONLY the active image reference
-          watch(() => state.activeDraggableImage, (newImg, oldImg) => {
+          watch(() => state.activeDraggableImage.selected, (newImg, oldImg) => {
             if (oldImg) oldImg.selected = false
             if (newImg) newImg.selected = true
             requestRender();
           });
+
+          watchEffect(() => {
+            state.draggableImages.forEach((img) => img.selected = state.selection.has(img))
+          })
 
           // Initial Draw
           requestRender();

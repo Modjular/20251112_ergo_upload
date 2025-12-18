@@ -77,3 +77,8 @@ I've been chewing on what to tackle next.
 
 **Multi-Selection**
 Once again, it gave good, working code and the only errors were mine. However, it didn't accout for 'backwards' selection (when xy1 and xy2 need to swap) and the tiles don't become 'selected', but thats a small visual issue.
+
+### 12/17/25
+Multi-selection highlights aren't working. Actually, selection in general isn't working. I should add the boxes back now that we have watchers for 'selected'
+
+Done. But now I'm wondering if the multiple watchers (and `watchEffect`) are causing performance issues. It looks like our long draw frames are being caused by mostly Vue reactivity activity.

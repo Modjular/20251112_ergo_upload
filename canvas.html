@@ -16,7 +16,6 @@
       touch-action: none;
       position: relative;
     }
-    /* Pixi canvas will be appended here, we ensure it fits */
     canvas {
       display: block;
       width: 100%;
@@ -66,10 +65,10 @@
       border: none;
       padding: 6px 12px;
       border-radius: 4px;
-      font-family: sans-serif;
       font-size: 12px;
       cursor: pointer;
       margin-left: 1ch;
+      transition: background 0.2s;
     }
 
     .hud-btn:hover {
@@ -81,11 +80,11 @@
       position: absolute;
       display: flex;
       align-items: center;
-      gap: 4px;
+      gap: 8px;
       padding: 6px 8px;
       background: #2c2c34;
       border-radius: 8px;
-      box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.1);
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.1);
       pointer-events: auto;
       transform: translateX(-50%);
       z-index: 20;
@@ -99,9 +98,8 @@
       background: transparent;
       border: none;
       color: #fff;
-      padding: 6px 12px;
+      padding: 4px 8px;
       border-radius: 4px;
-      font-family: sans-serif;
       font-size: 13px;
       cursor: pointer;
       white-space: nowrap;
@@ -109,6 +107,51 @@
 
     .context-popup-bar button:hover {
       background: rgba(255, 255, 255, 0.1);
+    }
+    
+    .divider {
+      width: 1px;
+      height: 20px;
+      background: rgba(255, 255, 255, 0.2);
+    }
+
+    /* Shader Inputs */
+    .shader-controls {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .shader-controls label {
+      color: #aaa;
+      font-size: 10px;
+      text-transform: uppercase;
+      font-weight: bold;
+      margin-right: 2px;
+    }
+
+    .input-group {
+      display: flex;
+      flex-direction: column;
+    }
+
+    input[type="number"] {
+      background: #1e1e24;
+      border: 1px solid #444;
+      color: white;
+      border-radius: 3px;
+      width: 60px;
+      padding: 2px 4px;
+      font-size: 12px;
+    }
+
+    select {
+      background: #1e1e24;
+      border: 1px solid #444;
+      color: white;
+      border-radius: 3px;
+      padding: 2px 4px;
+      font-size: 12px;
     }
   </style>
 </head>
@@ -122,7 +165,35 @@
         <button id="grid-btn" class="hud-btn">Grid (G)</button>
         <button id="fit-btn" class="hud-btn">Fit All (F)</button>
       </div>
+      
       <div id="context-popup-bar" class="context-popup-bar hidden">
+        <div class="shader-controls">
+          <div class="input-group">
+            <select id="colormap-select">
+              <option value="gray">Gray</option>
+              <option value="r">Red</option>
+              <option value="g">Green</option>
+              <option value="b">Blue</option>
+              <option value="c">Cyan</option>
+              <option value="m">Magenta</option>
+              <option value="y">Yellow</option>
+              <option value="viridis">Viridis</option>
+              <option value="inferno">Inferno</option>
+              <option value="turbo">Turbo</option>
+            </select>
+          </div>
+          
+          <div class="divider"></div>
+
+          <div class="input-group">
+            <input type="number" id="min-input" placeholder="Min" step="100">
+          </div>
+          <div class="input-group">
+            <input type="number" id="max-input" placeholder="Max" step="100">
+          </div>
+        </div>
+        
+        <div class="divider"></div>
         <button id="popup-action-btn">Action</button>
       </div>
     </viewport-hud>
@@ -133,6 +204,107 @@
 
   <script>
     const { createApp, onMounted, reactive, watch, watchEffect } = Vue;
+
+    // --- Shader Source Code ---
+
+    const tileVertexShader = `
+      precision highp float;
+      attribute vec2 aVertexPosition;
+      attribute vec2 aTextureCoord;
+
+      uniform mat3 projectionMatrix;
+      uniform mat3 translationMatrix;
+
+      varying vec2 vTextureCoord;
+
+      void main(void) {
+          vTextureCoord = aTextureCoord;
+          // Combine the matrices to transform the vertex to screen space
+          gl_Position = vec4((projectionMatrix * translationMatrix * vec3(aVertexPosition, 1.0)).xy, 0.0, 1.0);
+      }
+    `;
+
+    const tileFragmentShader = `
+      precision highp float;
+      varying vec2 vTextureCoord;
+
+      uniform sampler2D uSampler;     // The raw 16-bit (Float32) data
+      uniform sampler2D uColormap;    // The LUT texture
+      uniform float uMin;             // Contrast Min
+      uniform float uMax;             // Contrast Max
+
+      void main() {
+          // 1. Sample raw intensity (assumed PIXI.FORMATS.RED / LUMINANCE)
+          float raw = texture2D(uSampler, vTextureCoord).r;
+
+          // 2. Normalize based on contrast limits
+          float range = uMax - uMin;
+          float normalized = (raw - uMin) / (range + 0.00001); // Avoid div by zero
+          
+          // 3. Clamp
+          normalized = clamp(normalized, 0.0, 1.0);
+
+          // 4. Map to Colormap LUT
+          // V coordinate is 0.5 to sample the center of the 1px high texture
+          vec4 color = texture2D(uColormap, vec2(normalized, 0.5));
+          
+          gl_FragColor = color;
+      }
+    `;
+
+    // --- Colormap Factory ---
+    
+    const ColormapFactory = {
+      textures: new Map(),
+
+      get(name) {
+        if (this.textures.has(name)) return this.textures.get(name);
+        
+        const canvas = document.createElement('canvas');
+        canvas.width = 256;
+        canvas.height = 1;
+        const ctx = canvas.getContext('2d');
+        const grd = ctx.createLinearGradient(0, 0, 256, 0);
+
+        // Define stops
+        switch (name) {
+          case 'r': grd.addColorStop(0, '#000'); grd.addColorStop(1, '#f00'); break;
+          case 'g': grd.addColorStop(0, '#000'); grd.addColorStop(1, '#0f0'); break;
+          case 'b': grd.addColorStop(0, '#000'); grd.addColorStop(1, '#00f'); break;
+          case 'c': grd.addColorStop(0, '#000'); grd.addColorStop(1, '#0ff'); break;
+          case 'm': grd.addColorStop(0, '#000'); grd.addColorStop(1, '#f0f'); break;
+          case 'y': grd.addColorStop(0, '#000'); grd.addColorStop(1, '#ff0'); break;
+          case 'viridis': 
+            grd.addColorStop(0, '#440154'); grd.addColorStop(0.25, '#3b528b'); 
+            grd.addColorStop(0.5, '#21918c'); grd.addColorStop(0.75, '#5ec962'); 
+            grd.addColorStop(1, '#fde725'); 
+            break;
+          case 'inferno':
+            grd.addColorStop(0, '#000004'); grd.addColorStop(0.25, '#420a68');
+            grd.addColorStop(0.5, '#932667'); grd.addColorStop(0.75, '#dd513a');
+            grd.addColorStop(1, '#fca50a');
+            break;
+          case 'turbo':
+            // Simplified Turbo approximation
+            grd.addColorStop(0, '#30123b'); grd.addColorStop(0.2, '#4686fb');
+            grd.addColorStop(0.4, '#1ae4b6'); grd.addColorStop(0.6, '#a4fc3b');
+            grd.addColorStop(0.8, '#f1840b'); grd.addColorStop(1, '#7a0403');
+            break;
+          case 'gray': default: 
+            grd.addColorStop(0, '#000'); grd.addColorStop(1, '#fff'); break;
+        }
+
+        ctx.fillStyle = grd;
+        ctx.fillRect(0, 0, 256, 1);
+
+        const tex = PIXI.Texture.from(canvas);
+        tex.baseTexture.scaleMode = PIXI.SCALE_MODES.LINEAR; // Smooth gradient
+        tex.baseTexture.wrapMode = PIXI.WRAP_MODES.CLAMP;
+        
+        this.textures.set(name, tex);
+        return tex;
+      }
+    };
 
     /**
      * Represents a single high-resolution scientific image on the canvas.
@@ -162,14 +334,21 @@
         this.lodBias = lodBias;
         this.selected = false
 
-        // Callback to the main render loop
+        // --- New Visualization Fields ---
+        this.colormap = 'gray';
+        this.contrastLimits = [0, 4000]; // Default start range
+
+        // Shared shader program (compiled once per image instance)
+        this.program = PIXI.Program.from(tileVertexShader, tileFragmentShader);
+
+        // Callbacks
         this.onRequestRender = onRequestRender;
 
         this.isDragging = false;
         this.dragLastX = 0;
         this.dragLastY = 0;
 
-        // Cache storage: key -> { texture, sprite, loading, level }
+        // Cache storage: key -> { texture, mesh, loading, level }
         this.tiles = new Map(); 
         
         // Pixi Containers
@@ -211,7 +390,31 @@
        * Implements "Painter's Algorithm": draws low-res tiles first, then high-res on top.
        * @param {PIXI.Application} app - The main Pixi app instance.
        * @param {Object} state - The global Viewport state (offsetX, offsetY, scale).
+       * Updates visualization uniforms for all active tiles.
        */
+      updateShaderUniforms() {
+        const lutTexture = ColormapFactory.get(this.colormap);
+        
+        this.tiles.forEach(tileData => {
+          if (tileData.mesh) {
+            tileData.mesh.shader.uniforms.uMin = this.contrastLimits[0];
+            tileData.mesh.shader.uniforms.uMax = this.contrastLimits[1];
+            tileData.mesh.shader.uniforms.uColormap = lutTexture;
+          }
+        });
+        this.onRequestRender();
+      }
+
+      setColormap(name) {
+        this.colormap = name;
+        this.updateShaderUniforms();
+      }
+
+      setContrast(min, max) {
+        this.contrastLimits = [min, max];
+        this.updateShaderUniforms();
+      }
+
       computeVisibleTiles(app, state) {
         const worldScale = state.scale * this.scale;
         
@@ -265,27 +468,24 @@
               const key = `L${level}_Z${tz}_${ty}_${tx}`;
               
               newVisibleKeys.add(key);
-
-              // Only trigger network fetches for the Target Level.
-              // Parent levels are shown only if they are ALREADY in the cache (fallback).
               const shouldFetch = (level === targetLevel);
               this.syncTileSprite(tile, key, shouldFetch);
             }
           }
         }
 
-        // 4. Cleanup: Hide sprites not in the current stack
+        // Cleanup
         for (const [key, data] of this.tiles.entries()) {
-          if (!newVisibleKeys.has(key) && data.sprite) {
-            data.sprite.visible = false;
+          if (!newVisibleKeys.has(key) && data.mesh) {
+            data.mesh.visible = false;
           }
         }
       }
 
       /**
-       * Manages the Pixi Sprite for a specific tile.
+       * Manages the Pixi Mesh for a specific tile.
        * Creates it if missing, positions it, and assigns Z-index.
-       * * @param {Object} tile - Tile geometry data.
+       * @param {Object} tile - Tile geometry data.
        * @param {string} key - Unique tile ID.
        * @param {boolean} shouldFetch - Whether to trigger a fetch if the tile is missing.
        */
@@ -294,67 +494,56 @@
 
         if (!cached) {
           if (shouldFetch) {
-            this.tiles.set(key, { loading: true, sprite: null, texture: null, level: tile.level });
+            this.tiles.set(key, { loading: true, mesh: null, texture: null, level: tile.level });
             this.fetchTile(tile, key);
           }
           return;
         }
 
-        // Create Sprite from Texture if needed
-        if (cached.texture && !cached.sprite) {
-          const sprite = new PIXI.Sprite(cached.texture);
-          this.tileContainer.addChild(sprite);
-          cached.sprite = sprite;
+        // Create Mesh from Texture if data has arrived
+        if (cached.texture && !cached.mesh) {
+          // Create 1x1 geometry
+          const geometry = new PIXI.PlaneGeometry(1, 1, 1, 1);
+
+          const shader = new PIXI.Shader(this.program, {
+            uSampler: cached.texture,
+            uColormap: ColormapFactory.get(this.colormap),
+            uMin: this.contrastLimits[0],
+            uMax: this.contrastLimits[1]
+          });
+
+          const mesh = new PIXI.Mesh(geometry, shader);
+          
+          // CRITICAL: PlaneGeometry(1,1) bounds are -0.5 to 0.5. 
+          // We set the pivot to -0.5 so that the Mesh's (0,0) is its Top-Left corner.
+          mesh.pivot.set(-0.5, -0.5);
+
+          this.tileContainer.addChild(mesh);
+          cached.mesh = mesh;
         }
 
-        // Update Sprite Transform
-        if (cached.sprite) {
-          cached.sprite.visible = true;
-          cached.sprite.x = tile.tx * tile.effectiveTileSize;
-          cached.sprite.y = tile.ty * tile.effectiveTileSize;
+        // Update Mesh Transform
+        if (cached.mesh) {
+          cached.mesh.visible = true;
           
           const scaleFactor = Math.pow(2, tile.level);
-          cached.sprite.width = tile.tileWidth * scaleFactor;
-          cached.sprite.height = tile.tileHeight * scaleFactor;
           
-          // Z-Index: Lower Level (Higher Res) = Higher Index (On Top)
-          cached.sprite.zIndex = this.maxZoomLevel - tile.level;
+          // Calculate the actual display size of this tile in the image's local space
+          const displayWidth = tile.tileWidth * scaleFactor;
+          const displayHeight = tile.tileHeight * scaleFactor;
+
+          cached.mesh.width = displayWidth;
+          cached.mesh.height = displayHeight;
+          
+          // Position using the top-left logic
+          cached.mesh.x = tile.tx * tile.effectiveTileSize;
+          cached.mesh.y = tile.ty * tile.effectiveTileSize;
+
+          // Painter's algorithm: lower L numbers (higher res) get higher zIndex
+          cached.mesh.zIndex = this.maxZoomLevel - tile.level;
         }
       }
 
-      /**
-       * Converts raw 16-bit Uint16 image data into a viewable Pixi Texture.
-       * Uses a temporary HTML Canvas to perform the pixel mapping.
-       * * @param {Uint16Array} uint16Data - The raw pixel data.
-       * @param {number} width - Width of tile.
-       * @param {number} height - Height of tile.
-       * @returns {PIXI.Texture}
-       */
-      uint16ToTexture(uint16Data, width, height) {
-        const bufferCanvas = document.createElement('canvas');
-        bufferCanvas.width = width;
-        bufferCanvas.height = height;
-        const ctx = bufferCanvas.getContext('2d');
-        const imageData = ctx.createImageData(width, height);
-        const rgba = imageData.data;
-
-        // Normalization range (could be dynamic in future)
-        let min = 0, max = 4000;
-        const range = max - min || 1;
-
-        for (let i = 0; i < uint16Data.length; i++) {
-          // Simple linear mapping: (val - min) / range -> 0..255
-          const val = Math.floor(((uint16Data[i] - min) / range) * 255);
-          const idx = i * 4;
-          rgba[idx] = val;     // R
-          rgba[idx + 1] = val; // G
-          rgba[idx + 2] = val; // B
-          rgba[idx + 3] = 255; // Alpha
-        }
-
-        ctx.putImageData(imageData, 0, 0);
-        return PIXI.Texture.from(bufferCanvas);
-      }
 
       /**
        * Fetches tile data from the backend.
@@ -368,7 +557,28 @@
           .then(res => res.arrayBuffer())
           .then(buffer => {
             const uint16Data = new Uint16Array(buffer);
-            const texture = this.uint16ToTexture(uint16Data, tile.tileWidth, tile.tileHeight);
+            
+            // Convert to Float32 for WebGL
+            // This allows the shader to read values 0..65535 exactly.
+            const floatData = new Float32Array(uint16Data.length);
+            for(let i=0; i<uint16Data.length; i++) {
+              floatData[i] = uint16Data[i];
+            }
+
+            // Create Buffer Resource
+            const bufferResource = new PIXI.BufferResource(floatData, {
+                width: tile.tileWidth,
+                height: tile.tileHeight,
+            });
+
+            // Create Texture with RED format (single channel float)
+            const baseTexture = new PIXI.BaseTexture(bufferResource, {
+                format: PIXI.FORMATS.RED, 
+                type: PIXI.TYPES.FLOAT,
+                scaleMode: PIXI.SCALE_MODES.NEAREST // No interpolation on raw values!
+            });
+
+            const texture = new PIXI.Texture(baseTexture);
             
             const cached = this.tiles.get(key);
             if(cached) {
@@ -452,6 +662,11 @@
           },
           
           draggableImages: [],
+          
+          // Current UI Values (bound to selection)
+          uiColormap: 'gray',
+          uiMin: 0,
+          uiMax: 4000
         });
 
         let app;
@@ -682,15 +897,32 @@
           };
         }
 
+        // --- Selection UI Handling ---
+
+        function updateUIFromSelection() {
+          if (state.selection.size === 0) return;
+          // Take values from the first selected item
+          const first = [...state.selection][0];
+          state.uiColormap = first.colormap;
+          state.uiMin = first.contrastLimits[0];
+          state.uiMax = first.contrastLimits[1];
+        }
+
+        function applyUIToSelection() {
+          state.selection.forEach(img => {
+            img.setColormap(state.uiColormap);
+            img.setContrast(Number(state.uiMin), Number(state.uiMax));
+          });
+        }
+
         onMounted(() => {
-          // Initialize Pixi Application
           app = new PIXI.Application({
             resizeTo: document.getElementById('app'),
-            backgroundColor: 0x000000,
+            backgroundColor: 0x2c2c34,
             antialias: true,
             resolution: window.devicePixelRatio || 1,
             autoDensity: true,
-            autoStart: false // Manual rendering only
+            autoStart: false
           });
           document.getElementById('app').appendChild(app.view);
           app.stage.addChild(worldContainer);
@@ -775,7 +1007,7 @@
                   worldContainer.removeChild(img.container);
                   worldContainer.addChild(img.container);
                 });
-
+                updateUIFromSelection(); // Update UI
               } else {
                 // --- Scenario B: Clicked Empty Space ---
                 
@@ -884,8 +1116,7 @@
                   state.selection.add(img);
                 }
               });
-
-              // Reset Box
+              updateUIFromSelection(); // Update UI on box select
               state.selectionBox.active = false;
               selectionBoxGraphics.clear();
               requestRender();
@@ -930,19 +1161,33 @@
             requestRender();
           });
 
-          // Initialize Data
-          setupScene();
-          
-          // TODO { deep: true } causes MASSIVE lag, because its activating even on coord change
-          // Watcher: Auto-render when reactive state changes
-          // watch(state, () => {
-          //   // TODO: FIX this watcher. For some reason it keeps detecting changes,
-          //   // causing an infinite loop. I suspect a cycle somewhere.
-          //   requestRender();
-          // }, { deep: true });
+          // Bind UI Controls to State
+          const cmapSelect = document.getElementById('colormap-select');
+          const minInput = document.getElementById('min-input');
+          const maxInput = document.getElementById('max-input');
 
-          // Watch ONLY the active image reference
-          watch(() => state.activeDraggableImage.selected, (newImg, oldImg) => {
+          watch(() => state.uiColormap, (val) => { cmapSelect.value = val; });
+          watch(() => state.uiMin, (val) => { minInput.value = val; });
+          watch(() => state.uiMax, (val) => { maxInput.value = val; });
+
+          cmapSelect.addEventListener('change', (e) => {
+            state.uiColormap = e.target.value;
+            applyUIToSelection();
+          });
+          
+          minInput.addEventListener('change', (e) => {
+            state.uiMin = Number(e.target.value);
+            applyUIToSelection();
+          });
+
+          maxInput.addEventListener('change', (e) => {
+            state.uiMax = Number(e.target.value);
+            applyUIToSelection();
+          });
+
+          setupScene();
+
+          watch(() => state.activeDraggableImage, (newImg, oldImg) => {
             if (oldImg) oldImg.selected = false
             if (newImg) newImg.selected = true
             requestRender();

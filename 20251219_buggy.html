@@ -1,0 +1,1335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Pan/Zoom PixiJS</title>
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      overflow: hidden;
+      background: #2c2c34;
+    }
+    #app {
+      width: 100%;
+      height: 100%;
+      touch-action: none;
+      position: relative;
+    }
+    /* Pixi canvas will be appended here, we ensure it fits */
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    /* ViewportHUD - overlay that floats above canvas */
+    viewport-hud {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      pointer-events: none;
+      display: block;
+      z-index: 10;
+    }
+
+    viewport-hud > * {
+      pointer-events: auto;
+    }
+
+    .hud-top-left {
+      position: absolute;
+      top: 12px;
+      left: 12px;
+    }
+
+    .hud-bottom-right {
+      position: absolute;
+      bottom: 12px;
+      right: 12px;
+    }
+
+    .hud-label {
+      background: rgba(0, 0, 0, 0.6);
+      color: #fff;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-family: monospace;
+      font-size: 12px;
+    }
+
+    .hud-btn {
+      background: rgba(0, 0, 0, 0.6);
+      color: #fff;
+      border: none;
+      padding: 6px 12px;
+      border-radius: 4px;
+      font-family: sans-serif;
+      font-size: 12px;
+      cursor: pointer;
+      margin-left: 1ch;
+    }
+
+    .hud-btn:hover {
+      background: rgba(0, 0, 0, 0.8);
+    }
+
+    /* Context Popup Bar - FigJam style */
+    .context-popup-bar {
+      position: absolute;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 6px 8px;
+      background: #2c2c34;
+      border-radius: 8px;
+      box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.1);
+      pointer-events: auto;
+      transform: translateX(-50%);
+      z-index: 20;
+    }
+
+    .context-popup-bar.hidden {
+      display: none;
+    }
+
+    .context-popup-bar button {
+      background: transparent;
+      border: none;
+      color: #fff;
+      padding: 6px 12px;
+      border-radius: 4px;
+      font-family: sans-serif;
+      font-size: 13px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .context-popup-bar button:hover {
+      background: rgba(255, 255, 255, 0.1);
+    }
+
+    .context-popup-bar .popup-divider {
+      width: 1px;
+      height: 20px;
+      background: rgba(255, 255, 255, 0.2);
+      margin: 0 4px;
+    }
+
+    .context-popup-bar label {
+      color: rgba(255, 255, 255, 0.6);
+      font-size: 11px;
+      font-family: sans-serif;
+      margin-right: 4px;
+    }
+
+    .context-popup-bar select {
+      background: rgba(255, 255, 255, 0.1);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      color: #fff;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      cursor: pointer;
+      outline: none;
+    }
+
+    .context-popup-bar select:hover {
+      background: rgba(255, 255, 255, 0.15);
+    }
+
+    .context-popup-bar input[type="range"] {
+      width: 80px;
+      height: 4px;
+      -webkit-appearance: none;
+      background: rgba(255, 255, 255, 0.2);
+      border-radius: 2px;
+      outline: none;
+    }
+
+    .context-popup-bar input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 12px;
+      height: 12px;
+      background: #fff;
+      border-radius: 50%;
+      cursor: pointer;
+    }
+
+    .context-popup-bar .control-group {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <viewport-hud>
+      <div class="hud-top-left">
+        <span id="zoom-label" class="hud-label">100%</span>
+      </div>
+      <div class="hud-bottom-right">
+        <button id="grid-btn" class="hud-btn">Grid (G)</button>
+        <button id="fit-btn" class="hud-btn">Fit All (F)</button>
+      </div>
+      <div id="context-popup-bar" class="context-popup-bar hidden">
+        <div class="control-group">
+          <label>B</label>
+          <input type="range" id="brightness-slider" min="-1" max="1" step="0.01" value="0">
+        </div>
+        <div class="control-group">
+          <label>C</label>
+          <input type="range" id="contrast-slider" min="0.1" max="3" step="0.01" value="1">
+        </div>
+        <div class="popup-divider"></div>
+        <div class="control-group">
+          <select id="colormap-select">
+            <option value="Gray">Gray</option>
+            <option value="Red">Red</option>
+            <option value="Green">Green</option>
+            <option value="Blue">Blue</option>
+            <option value="Cyan">Cyan</option>
+            <option value="Magenta">Magenta</option>
+            <option value="Yellow">Yellow</option>
+            <option value="Viridis">Viridis</option>
+            <option value="Inferno">Inferno</option>
+            <option value="Turbo">Turbo</option>
+          </select>
+        </div>
+      </div>
+    </viewport-hud>
+  </div>
+
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.3.2/pixi.min.js"></script>
+
+  <script>
+    const { createApp, onMounted, reactive, watch, watchEffect } = Vue;
+
+    /**
+     * Colormap LUT definitions (256 RGB values each).
+     * Generated from matplotlib colormaps.
+     */
+    const COLORMAPS = {
+      Gray: null, // No LUT = passthrough
+      Red: Array.from({length: 256}, (_, i) => [i, 0, 0]),
+      Green: Array.from({length: 256}, (_, i) => [0, i, 0]),
+      Blue: Array.from({length: 256}, (_, i) => [0, 0, i]),
+      Cyan: Array.from({length: 256}, (_, i) => [0, i, i]),
+      Magenta: Array.from({length: 256}, (_, i) => [i, 0, i]),
+      Yellow: Array.from({length: 256}, (_, i) => [i, i, 0]),
+      Viridis: [
+        [68,1,84],[68,2,86],[69,4,87],[69,5,89],[70,7,90],[70,8,92],[70,10,93],[70,11,94],
+        [71,13,96],[71,14,97],[71,16,99],[71,17,100],[71,19,101],[72,20,103],[72,22,104],[72,23,105],
+        [72,24,106],[72,26,108],[72,27,109],[72,28,110],[72,29,111],[72,31,112],[72,32,113],[72,33,115],
+        [72,35,116],[72,36,117],[72,37,118],[72,38,119],[72,40,120],[72,41,121],[71,42,122],[71,44,122],
+        [71,45,123],[71,46,124],[71,47,125],[70,48,126],[70,50,126],[70,51,127],[69,52,128],[69,53,129],
+        [69,55,129],[68,56,130],[68,57,131],[68,58,131],[67,60,132],[67,61,132],[66,62,133],[66,63,133],
+        [66,64,134],[65,66,134],[65,67,135],[64,68,135],[64,69,136],[63,71,136],[63,72,137],[62,73,137],
+        [62,74,137],[62,76,138],[61,77,138],[61,78,138],[60,79,139],[60,80,139],[59,82,139],[59,83,140],
+        [58,84,140],[58,85,140],[57,86,141],[57,88,141],[56,89,141],[56,90,141],[55,91,142],[55,92,142],
+        [54,93,142],[54,94,142],[53,96,142],[53,97,143],[52,98,143],[52,99,143],[51,100,143],[51,101,143],
+        [50,102,143],[50,103,144],[49,104,144],[49,105,144],[49,106,144],[48,107,144],[48,108,144],[47,109,144],
+        [47,110,144],[46,111,144],[46,112,144],[45,113,144],[45,114,144],[45,115,144],[44,116,144],[44,117,144],
+        [43,117,144],[43,118,144],[42,119,144],[42,120,144],[42,121,144],[41,122,144],[41,123,144],[40,124,144],
+        [40,125,144],[39,126,144],[39,127,143],[38,128,143],[38,129,143],[37,130,143],[37,131,143],[36,132,143],
+        [36,133,142],[35,133,142],[35,134,142],[34,135,142],[34,136,141],[33,137,141],[33,138,141],[32,139,140],
+        [32,140,140],[31,141,140],[31,142,139],[30,142,139],[30,143,139],[29,144,138],[29,145,138],[28,146,137],
+        [28,147,137],[27,148,136],[27,149,136],[26,149,135],[26,150,135],[25,151,135],[25,152,134],[24,153,134],
+        [24,154,133],[24,155,132],[23,156,132],[23,157,131],[22,158,131],[22,158,130],[21,159,130],[21,160,129],
+        [20,161,129],[20,162,128],[20,163,127],[19,164,127],[19,165,126],[18,166,126],[18,167,125],[18,167,124],
+        [17,168,124],[17,169,123],[17,170,123],[16,171,122],[16,172,121],[16,173,121],[16,173,120],[15,174,119],
+        [15,175,119],[15,176,118],[15,177,117],[15,178,117],[14,179,116],[14,180,115],[14,180,115],[14,181,114],
+        [14,182,113],[14,183,113],[14,184,112],[14,185,111],[14,186,110],[14,186,110],[13,187,109],[13,188,108],
+        [13,189,108],[13,190,107],[13,191,106],[14,192,105],[14,192,105],[14,193,104],[14,194,103],[15,195,102],
+        [15,196,102],[15,197,101],[16,198,100],[16,199,99],[17,200,98],[17,200,98],[18,201,97],[18,202,96],
+        [19,203,95],[20,204,94],[20,205,93],[21,206,93],[22,206,92],[23,207,91],[24,208,90],[25,209,89],
+        [26,210,88],[27,211,87],[28,212,86],[30,212,85],[31,213,84],[32,214,83],[34,215,82],[35,216,81],
+        [37,217,80],[38,218,79],[40,218,78],[42,219,77],[43,220,76],[45,221,75],[47,221,74],[49,222,73],
+        [51,223,72],[53,224,71],[55,224,70],[57,225,69],[59,226,68],[61,227,67],[63,227,66],[65,228,65],
+        [68,229,64],[70,229,63],[72,230,62],[74,231,61],[77,232,59],[79,232,58],[81,233,57],[84,234,56],
+        [86,234,55],[89,235,54],[91,236,53],[94,236,52],[96,237,51],[99,237,50],[101,238,49],[104,239,48],
+        [106,239,47],[109,240,46],[112,240,45],[114,241,44],[117,241,43],[120,242,42],[123,242,42],[125,243,41],
+        [128,244,40],[131,244,39],[133,245,38],[136,245,38],[139,246,37],[142,246,36],[144,247,36],[147,247,35],
+        [150,248,34],[153,248,34],[156,249,33],[158,249,33],[161,250,32],[164,250,32],[167,251,31],[170,251,31],
+        [173,252,30],[176,252,30],[178,252,30],[181,253,29],[184,253,29],[187,254,29],[190,254,28],[193,254,28],
+        [196,255,28],[199,255,28],[201,255,27],[204,255,27],[207,255,27],[210,255,27],[213,255,27],[216,255,27],
+        [219,255,27],[221,255,27],[224,255,27],[227,255,27],[230,255,28],[232,255,28],[235,255,28],[238,255,29]
+      ],
+      Inferno: [
+        [0,0,4],[1,0,5],[1,1,6],[1,1,8],[2,1,9],[2,2,11],[2,2,13],[3,2,14],
+        [4,3,16],[4,3,18],[5,4,19],[6,4,21],[7,5,23],[8,5,25],[9,6,27],[10,6,28],
+        [11,7,30],[12,7,32],[13,8,34],[14,8,36],[16,9,38],[17,9,40],[18,10,42],[20,10,44],
+        [21,11,46],[22,11,48],[24,12,50],[25,12,52],[27,12,54],[28,13,56],[30,13,58],[31,13,60],
+        [33,14,62],[35,14,64],[36,14,66],[38,14,68],[40,15,70],[41,15,72],[43,15,74],[45,15,76],
+        [47,15,78],[48,15,80],[50,15,82],[52,16,83],[54,16,85],[55,16,87],[57,16,89],[59,16,91],
+        [61,16,92],[62,16,94],[64,16,96],[66,16,97],[68,16,99],[70,16,101],[71,16,102],[73,16,104],
+        [75,16,105],[77,17,107],[79,17,108],[80,17,110],[82,17,111],[84,17,113],[86,17,114],[88,17,115],
+        [89,17,117],[91,17,118],[93,17,119],[95,17,121],[97,17,122],[98,17,123],[100,18,124],[102,18,125],
+        [104,18,127],[106,18,128],[107,18,129],[109,18,130],[111,18,131],[113,18,132],[115,18,133],[116,18,134],
+        [118,18,135],[120,18,136],[122,19,137],[123,19,138],[125,19,138],[127,19,139],[129,19,140],[130,19,141],
+        [132,19,141],[134,19,142],[136,19,143],[137,20,143],[139,20,144],[141,20,144],[143,20,145],[144,20,145],
+        [146,20,146],[148,20,146],[150,21,147],[151,21,147],[153,21,148],[155,21,148],[156,22,148],[158,22,149],
+        [160,22,149],[162,22,149],[163,22,149],[165,23,150],[167,23,150],[169,23,150],[170,23,150],[172,24,150],
+        [174,24,151],[176,24,151],[177,24,151],[179,25,151],[181,25,151],[183,25,151],[185,26,151],[186,26,151],
+        [188,26,151],[190,26,151],[191,27,151],[193,27,151],[195,27,150],[197,28,150],[198,28,150],[200,28,150],
+        [202,28,150],[204,29,149],[205,29,149],[207,29,149],[209,30,148],[210,30,148],[212,30,148],[214,31,147],
+        [215,31,147],[217,31,146],[219,31,146],[220,32,145],[222,32,145],[224,32,144],[225,33,144],[227,33,143],
+        [228,33,142],[230,34,142],[231,34,141],[233,34,140],[235,35,139],[236,35,139],[238,35,138],[239,36,137],
+        [241,36,136],[242,37,135],[244,37,134],[245,37,133],[246,38,132],[248,38,131],[249,39,130],[250,39,129],
+        [252,40,128],[253,40,127],[254,41,126],[254,41,125],[255,42,123],[255,43,122],[255,43,121],[255,44,119],
+        [255,45,118],[255,46,117],[255,46,115],[255,47,114],[255,48,112],[255,49,111],[255,50,109],[255,50,108],
+        [255,51,106],[255,52,105],[255,53,103],[255,54,101],[255,55,100],[255,56,98],[255,57,97],[255,58,95],
+        [255,59,93],[255,60,92],[255,61,90],[254,62,88],[254,63,87],[254,64,85],[254,65,83],[254,66,82],
+        [254,68,80],[254,69,78],[254,70,77],[254,71,75],[254,72,73],[254,74,72],[254,75,70],[254,76,68],
+        [254,78,67],[254,79,65],[254,80,63],[254,82,62],[254,83,60],[254,85,59],[254,86,57],[254,88,55],
+        [254,89,54],[253,91,52],[253,92,51],[253,94,49],[253,96,48],[253,97,46],[253,99,45],[253,101,43],
+        [252,102,42],[252,104,40],[252,106,39],[252,108,38],[251,110,36],[251,111,35],[251,113,34],[251,115,32],
+        [250,117,31],[250,119,30],[250,121,29],[249,123,28],[249,125,27],[249,127,26],[248,129,25],[248,131,24],
+        [247,133,23],[247,135,22],[246,137,21],[246,139,21],[245,141,20],[245,143,19],[244,145,19],[244,148,18],
+        [243,150,17],[243,152,17],[242,154,16],[242,156,16],[241,159,15],[241,161,15],[240,163,14],[240,165,14],
+        [239,168,14],[239,170,13],[238,172,13],[238,175,13],[237,177,12],[237,179,12],[236,182,12],[236,184,11],
+        [235,186,11],[235,189,11],[234,191,11],[233,194,11],[233,196,10],[232,199,10],[231,201,10],[231,204,10],
+        [230,206,10],[229,209,10],[228,211,10],[228,214,10],[227,217,10],[226,219,10],[225,222,10],[224,224,11]
+      ],
+      Turbo: [
+        [48,18,59],[50,21,67],[51,24,74],[52,27,81],[53,30,88],[54,33,95],[55,36,102],[55,39,109],
+        [56,42,115],[57,45,122],[57,48,128],[58,51,134],[58,54,140],[59,57,146],[59,60,152],[59,63,157],
+        [60,66,163],[60,69,168],[60,72,173],[60,75,178],[60,78,183],[60,81,188],[59,84,193],[59,87,197],
+        [59,90,201],[58,93,206],[58,96,210],[57,99,214],[56,102,218],[55,105,221],[54,108,225],[53,111,228],
+        [52,114,231],[51,117,234],[50,120,237],[48,123,239],[47,126,242],[46,129,244],[45,132,246],[43,135,248],
+        [42,138,250],[41,141,251],[40,144,252],[38,147,254],[37,150,255],[36,153,255],[35,156,255],[34,159,255],
+        [33,161,255],[32,164,255],[31,167,254],[30,170,254],[30,173,253],[29,175,252],[29,178,251],[28,181,250],
+        [28,183,249],[28,186,248],[28,189,246],[28,191,245],[28,194,243],[29,196,241],[29,199,239],[30,201,237],
+        [31,204,235],[32,206,233],[33,208,231],[34,211,228],[36,213,226],[38,215,223],[39,217,221],[41,219,218],
+        [43,221,215],[45,223,212],[48,225,209],[50,227,206],[53,229,203],[55,230,200],[58,232,197],[61,233,194],
+        [64,235,190],[67,236,187],[70,238,184],[73,239,180],[77,240,177],[80,242,173],[83,243,169],[87,244,166],
+        [90,245,162],[94,246,158],[97,248,154],[101,249,150],[105,250,146],[108,251,142],[112,252,138],[116,253,134],
+        [119,254,130],[123,254,126],[127,255,122],[131,255,118],[135,255,114],[139,255,110],[143,255,106],[147,255,102],
+        [151,255,98],[155,255,94],[159,255,90],[163,255,86],[167,255,82],[171,254,78],[175,254,74],[179,254,70],
+        [183,253,66],[187,252,62],[191,252,58],[194,251,54],[198,250,51],[202,249,47],[205,248,43],[209,247,40],
+        [212,246,36],[216,245,33],[219,244,29],[222,242,26],[226,241,23],[229,239,20],[232,238,17],[235,236,14],
+        [238,234,11],[240,233,9],[243,231,7],[246,229,5],[248,227,4],[250,225,2],[252,223,1],[253,221,1],
+        [255,219,0],[255,217,0],[255,215,0],[255,213,0],[255,211,0],[255,209,0],[255,206,0],[255,204,1],
+        [255,201,1],[255,199,1],[255,196,2],[255,193,2],[255,191,3],[255,188,4],[255,185,5],[255,182,6],
+        [255,179,7],[255,176,8],[255,173,10],[255,170,11],[255,167,13],[255,163,14],[255,160,16],[255,157,18],
+        [255,153,19],[255,150,21],[255,146,23],[255,143,25],[255,139,27],[255,135,29],[255,132,31],[255,128,33],
+        [254,124,35],[254,121,37],[254,117,39],[254,113,42],[253,109,44],[253,106,46],[252,102,48],[252,98,50],
+        [251,95,53],[251,91,55],[250,87,57],[250,84,59],[249,80,62],[248,76,64],[248,73,66],[247,69,68],
+        [246,65,71],[246,62,73],[245,58,75],[244,55,78],[243,51,80],[243,48,82],[242,44,84],[241,41,86],
+        [240,38,89],[239,35,91],[238,32,93],[237,29,95],[236,26,97],[235,23,99],[234,20,101],[233,18,103],
+        [231,16,105],[230,14,107],[229,12,109],[227,10,111],[226,9,113],[225,7,114],[223,6,116],[222,5,117],
+        [220,4,119],[219,4,120],[217,3,122],[216,3,123],[214,3,124],[213,3,125],[211,3,126],[209,4,127],
+        [208,4,128],[206,5,129],[205,5,130],[203,6,131],[201,7,131],[200,8,132],[198,9,132],[196,10,133],
+        [195,11,133],[193,12,134],[191,13,134],[190,14,134],[188,16,134],[186,17,135],[185,18,135],[183,19,135],
+        [181,20,135],[180,22,135],[178,23,135],[176,24,135],[175,26,135],[173,27,135],[171,28,135],[170,30,135],
+        [168,31,134],[166,32,134],[165,34,134],[163,35,134],[161,36,133],[160,38,133],[158,39,133],[156,41,132],
+        [155,42,132],[153,43,131],[151,45,131],[150,46,130],[148,48,130],[146,49,129],[145,51,128],[143,52,128]
+      ]
+    };
+
+    /**
+     * Custom PixiJS filter for applying brightness/contrast and colormap LUT.
+     * Uses WebGL shader for GPU-accelerated processing.
+     */
+    class ColormapFilter extends PIXI.Filter {
+      constructor() {
+        const vertexShader = null; // Use default vertex shader
+        const fragmentShader = `
+          precision highp float;
+          
+          varying vec2 vTextureCoord;
+          uniform sampler2D uSampler;
+          uniform sampler2D uLUT;
+          uniform float uBrightness;
+          uniform float uContrast;
+          uniform bool uUseLUT;
+          
+          void main() {
+            vec4 color = texture2D(uSampler, vTextureCoord);
+            
+            // Apply brightness/contrast to the grayscale value
+            float gray = color.r;
+            gray = (gray - 0.5) * uContrast + 0.5 + uBrightness;
+            gray = clamp(gray, 0.0, 1.0);
+            
+            if (uUseLUT) {
+              // Sample the LUT texture (256x1)
+              vec4 mappedColor = texture2D(uLUT, vec2(gray, 0.5));
+              gl_FragColor = vec4(mappedColor.rgb, color.a);
+            } else {
+              // Gray - no LUT
+              gl_FragColor = vec4(gray, gray, gray, color.a);
+            }
+          }
+        `;
+
+        super(vertexShader, fragmentShader, {
+          uBrightness: 0.0,
+          uContrast: 1.0,
+          uUseLUT: false,
+          uLUT: PIXI.Texture.WHITE
+        });
+
+        this._lutTextures = {};
+        this._initLUTTextures();
+      }
+
+      _initLUTTextures() {
+        for (const [name, lut] of Object.entries(COLORMAPS)) {
+          if (lut === null) continue;
+          
+          // Create a 256x1 RGBA texture from the LUT
+          const data = new Uint8Array(256 * 4);
+          for (let i = 0; i < 256; i++) {
+            data[i * 4 + 0] = lut[i][0];
+            data[i * 4 + 1] = lut[i][1];
+            data[i * 4 + 2] = lut[i][2];
+            data[i * 4 + 3] = 255;
+          }
+          
+          const texture = PIXI.Texture.fromBuffer(data, 256, 1, {
+            format: PIXI.FORMATS.RGBA,
+            type: PIXI.TYPES.UNSIGNED_BYTE,
+            scaleMode: PIXI.SCALE_MODES.LINEAR,
+            wrapMode: PIXI.WRAP_MODES.CLAMP,
+          });
+          
+          this._lutTextures[name] = texture;
+        }
+      }
+
+      get brightness() { return this.uniforms.uBrightness; }
+      set brightness(value) { this.uniforms.uBrightness = value; }
+
+      get contrast() { return this.uniforms.uContrast; }
+      set contrast(value) { this.uniforms.uContrast = value; }
+
+      setColormap(name) {
+        if (name === 'Gray' || !this._lutTextures[name]) {
+          this.uniforms.uUseLUT = false;
+        } else {
+          this.uniforms.uUseLUT = true;
+          this.uniforms.uLUT = this._lutTextures[name];
+        }
+      }
+    }
+
+    /**
+     * Represents a single high-resolution scientific image on the canvas.
+     * Handles multi-resolution tiling (LOD), fetching, caching, and rendering.
+     */
+    class DraggableImage {
+      /**
+       * @param {number} x - World X position.
+       * @param {number} y - World Y position.
+       * @param {number} width - Full resolution width of the image.
+       * @param {number} height - Full resolution height of the image.
+       * @param {Object} metadata - File metadata (filename, shape, dtype).
+       * @param {Function} onRequestRender - Callback to trigger a screen refresh when async data loads.
+       * @param {number} [tileSize=256] - Size of individual tiles in pixels.
+       * @param {number} [maxZoomLevel=4] - The lowest resolution level (highest L-number).
+       * @param {number} [lodBias=0] - Offset for LOD calculation. Positive values force lower-res tiles (blocky zoom).
+       */
+      constructor(x, y, width, height, metadata, onRequestRender, tileSize = 256, maxZoomLevel = 4, lodBias = 0) {
+        this.x = x;
+        this.y = y;
+        this.scale = 1;
+        this.width = width;
+        this.height = height;
+        this.metadata = metadata;
+        this.tileSize = tileSize;
+        this.maxZoomLevel = maxZoomLevel;
+        this.lodBias = lodBias;
+        this.selected = false;
+
+        // Display properties for B/C and colormap
+        this.brightness = 0;      // Range: -1 to 1
+        this.contrast = 1;        // Range: 0.1 to 3
+        this.colormap = 'Gray';   // 'Gray', 'Red', 'Green', 'Blue', 'Cyan', 'Magenta', 'Yellow', 'Viridis', 'Inferno', 'Turbo'
+
+        // Callback to the main render loop
+        this.onRequestRender = onRequestRender;
+
+        this.isDragging = false;
+        this.dragLastX = 0;
+        this.dragLastY = 0;
+
+        // Cache storage: key -> { texture, sprite, loading, level }
+        this.tiles = new Map(); 
+        
+        // Pixi Containers
+        this.container = new PIXI.Container();
+        this.bgGraphics = new PIXI.Graphics();
+        this.tileContainer = new PIXI.Container();
+        this.overlayGraphics = new PIXI.Graphics();
+        
+        // Important: Allows Z-Index to work so High-Res tiles sit on top of Low-Res ones
+        this.tileContainer.sortableChildren = true;
+
+        this.container.addChild(this.bgGraphics);
+        this.container.addChild(this.tileContainer);
+        this.container.addChild(this.overlayGraphics);
+
+        // Create shared colormap filter for all tiles in this image
+        this.tileContainer.filters = new ColormapFilter();
+
+        this.textLabel = new PIXI.Text('', {
+          fontFamily: 'monospace',
+          fontSize: 14,
+          fill: 0xaaaaaa,
+        });
+        this.overlayGraphics.addChild(this.textLabel);
+      }
+
+      /**
+       * Checks if a point (in World Coordinates) lies within this image's bounding box.
+       * Used for hit-testing mouse clicks.
+       * @param {number} px - World X coordinate of mouse.
+       * @param {number} py - World Y coordinate of mouse.
+       * @returns {boolean} True if point is inside.
+       */
+      containsPoint(px, py) {
+        return px >= this.x && px <= this.x + this.width * this.scale &&
+              py >= this.y && py <= this.y + this.height * this.scale;
+      }
+
+      /**
+       * The core rendering logic. Determines which tiles are visible based on 
+       * the current zoom level and viewport, then adds/removes sprites.
+       * Implements "Painter's Algorithm": draws low-res tiles first, then high-res on top.
+       * @param {PIXI.Application} app - The main Pixi app instance.
+       * @param {Object} state - The global Viewport state (offsetX, offsetY, scale).
+       */
+      computeVisibleTiles(app, state) {
+        const worldScale = state.scale * this.scale;
+        
+        // 1. Calculate Target LOD (Level of Detail)
+        let targetLevel = Math.floor(Math.log2(1 / worldScale)) + this.lodBias;
+        targetLevel = Math.min(Math.max(targetLevel, 0), this.maxZoomLevel);
+
+        // 2. Viewport Culling: Get screen bounds in Local Image Space
+        const viewportX = -state.offsetX / state.scale;
+        const viewportY = -state.offsetY / state.scale;
+        const viewportW = app.screen.width / state.scale;
+        const viewportH = app.screen.height / state.scale;
+
+        const ix0 = (viewportX - this.x) / this.scale;
+        const iy0 = (viewportY - this.y) / this.scale;
+        const ix1 = (viewportX + viewportW - this.x) / this.scale;
+        const iy1 = (viewportY + viewportH - this.y) / this.scale;
+
+        const cx0 = Math.max(0, ix0);
+        const cy0 = Math.max(0, iy0);
+        const cx1 = Math.min(this.width, ix1);
+        const cy1 = Math.min(this.height, iy1);
+
+        const newVisibleKeys = new Set();
+
+        // 3. Recursive Visibility Loop
+        // Iterate from Target Level (High Res) -> Max Level (Low Res)
+        for (let level = targetLevel; level <= this.maxZoomLevel; level++) {
+          
+          const effectiveTileSize = this.tileSize * Math.pow(2, level);
+          
+          // Calculate tile indices
+          const tx0 = Math.floor(cx0 / effectiveTileSize);
+          const ty0 = Math.floor(cy0 / effectiveTileSize);
+          const tx1 = Math.floor(cx1 / effectiveTileSize);
+          const ty1 = Math.floor(cy1 / effectiveTileSize);
+
+          for (let ty = ty0; ty <= ty1; ty++) {
+            for (let tx = tx0; tx <= tx1; tx++) {
+              const tz = 0;
+              const tileX0 = tx * effectiveTileSize;
+              const tileY0 = ty * effectiveTileSize;
+              
+              // Handle edge tiles that might be smaller than standard size
+              const tileWidth = Math.round(Math.min(effectiveTileSize, this.width - tileX0) / Math.pow(2, level));
+              const tileHeight = Math.round(Math.min(effectiveTileSize, this.height - tileY0) / Math.pow(2, level));
+
+              if (tileWidth <= 0 || tileHeight <= 0) continue;
+
+              const tile = { tz, ty, tx, level, effectiveTileSize, tileWidth, tileHeight };
+              const key = `L${level}_Z${tz}_${ty}_${tx}`;
+              
+              newVisibleKeys.add(key);
+
+              // Only trigger network fetches for the Target Level.
+              // Parent levels are shown only if they are ALREADY in the cache (fallback).
+              const shouldFetch = (level === targetLevel);
+              this.syncTileSprite(tile, key, shouldFetch);
+            }
+          }
+        }
+
+        // 4. Cleanup: Hide sprites not in the current stack
+        for (const [key, data] of this.tiles.entries()) {
+          if (!newVisibleKeys.has(key) && data.sprite) {
+            data.sprite.visible = false;
+          }
+        }
+      }
+
+      /**
+       * Manages the Pixi Sprite for a specific tile.
+       * Creates it if missing, positions it, and assigns Z-index.
+       * * @param {Object} tile - Tile geometry data.
+       * @param {string} key - Unique tile ID.
+       * @param {boolean} shouldFetch - Whether to trigger a fetch if the tile is missing.
+       */
+      syncTileSprite(tile, key, shouldFetch) {
+        let cached = this.tiles.get(key);
+
+        if (!cached) {
+          if (shouldFetch) {
+            this.tiles.set(key, { loading: true, sprite: null, texture: null, level: tile.level });
+            this.fetchTile(tile, key);
+          }
+          return;
+        }
+
+        // Create Sprite from Texture if needed
+        if (cached.texture && !cached.sprite) {
+          const sprite = new PIXI.Sprite(cached.texture);
+          // sprite.filters = [this.colormapFilter];
+          this.tileContainer.addChild(sprite);
+          cached.sprite = sprite;
+        }
+
+        // Update Sprite Transform
+        if (cached.sprite) {
+          cached.sprite.visible = true;
+          cached.sprite.x = tile.tx * tile.effectiveTileSize;
+          cached.sprite.y = tile.ty * tile.effectiveTileSize;
+          
+          const scaleFactor = Math.pow(2, tile.level);
+          cached.sprite.width = tile.tileWidth * scaleFactor;
+          cached.sprite.height = tile.tileHeight * scaleFactor;
+          
+          // Z-Index: Lower Level (Higher Res) = Higher Index (On Top)
+          cached.sprite.zIndex = this.maxZoomLevel - tile.level;
+        }
+      }
+
+      /**
+       * Converts raw 16-bit Uint16 image data into a viewable Pixi Texture.
+       * Uses a temporary HTML Canvas to perform the pixel mapping.
+       * * @param {Uint16Array} uint16Data - The raw pixel data.
+       * @param {number} width - Width of tile.
+       * @param {number} height - Height of tile.
+       * @returns {PIXI.Texture}
+       */
+      uint16ToTexture(uint16Data, width, height) {
+        const bufferCanvas = document.createElement('canvas');
+        bufferCanvas.width = width;
+        bufferCanvas.height = height;
+        const ctx = bufferCanvas.getContext('2d');
+        const imageData = ctx.createImageData(width, height);
+        const rgba = imageData.data;
+
+        // Normalization range (could be dynamic in future)
+        let min = 0, max = 4000;
+        const range = max - min || 1;
+
+        for (let i = 0; i < uint16Data.length; i++) {
+          // Simple linear mapping: (val - min) / range -> 0..255
+          const val = Math.floor(((uint16Data[i] - min) / range) * 255);
+          const idx = i * 4;
+          rgba[idx] = val;     // R
+          rgba[idx + 1] = val; // G
+          rgba[idx + 2] = val; // B
+          rgba[idx + 3] = 255; // Alpha
+        }
+
+        ctx.putImageData(imageData, 0, 0);
+        return PIXI.Texture.from(bufferCanvas);
+      }
+
+      /**
+       * Fetches tile data from the backend.
+       * On success: Updates cache, creates texture, and triggers a scene render.
+       */
+      fetchTile(tile, key) {
+        const BASE_URL = 'http://127.0.0.1:8000';
+        const { filename } = this.metadata;
+
+        fetch(BASE_URL + '/tile/' + encodeURI(filename) + '/' + key)
+          .then(res => res.arrayBuffer())
+          .then(buffer => {
+            const uint16Data = new Uint16Array(buffer);
+            const texture = this.uint16ToTexture(uint16Data, tile.tileWidth, tile.tileHeight);
+            
+            const cached = this.tiles.get(key);
+            if(cached) {
+                cached.texture = texture;
+                cached.loading = false;
+                // Nearest neighbor for "pixel perfect" scientific view
+                cached.texture.baseTexture.scaleMode = PIXI.SCALE_MODES.NEAREST;
+                
+                // Sync immediately (create sprite) but don't fetch again
+                this.syncTileSprite(tile, key, false);
+                
+                // CRITICAL: Tell the app to redraw because visual data changed
+                this.onRequestRender();
+            }
+          })
+          .catch(err => {
+            // If fetch fails, remove from cache so we can try again later
+            this.tiles.delete(key);
+            this.onRequestRender(); // Redraw to potentially clear loading states
+          });
+      }
+
+      /**
+       * Updates the colormap filter with current B/C and colormap settings.
+       */
+      updateFilter() {
+        this.colormapFilter.brightness = this.brightness;
+        this.colormapFilter.contrast = this.contrast;
+        this.colormapFilter.setColormap(this.colormap);
+      }
+
+      /**
+       * Updates the main container transform and redraws the UI overlays.
+       * Called every render frame.
+       */
+      updateVisuals(app, state) {
+        this.container.x = this.x;
+        this.container.y = this.y;
+        this.container.scale.set(this.scale);
+
+        // Sync filter with current display settings
+        this.updateFilter();
+
+        // Draw Background
+        const g = this.bgGraphics;
+        g.clear();
+        g.beginFill(0x646496, 0.3);
+        g.drawRect(0, 0, this.width, this.height);
+        g.endFill();
+
+        // Draw Selection Border
+        const o = this.overlayGraphics;
+        o.clear();
+
+        // Keep line width consistent regardless of zoom
+        if (this.selected) {
+          o.lineStyle(2 / (state.scale * this.scale), 0x4a9eff, 1);
+          o.drawRect(0, 0, this.width, this.height);
+        }
+
+        // Update Text Label
+        this.textLabel.text = `${(this.scale * 100).toFixed(0)}%`;
+        this.textLabel.x = 5 / this.scale;
+        this.textLabel.y = 20 / this.scale;
+        this.textLabel.scale.set(1 / this.scale); 
+
+        // Recalculate tiles
+        this.computeVisibleTiles(app, state);
+      }
+    }
+
+    createApp({
+      setup() {
+        const state = reactive({
+          offsetX: 0,
+          offsetY: 0,
+          scale: 1,
+          
+          // Camera Panning State
+          isPanning: false,
+          panStart: { x: 0, y: 0 },
+
+          // Selection / Image Drag State
+          selection: new Set(), // Set of DraggableImage instances
+          isDraggingImages: false,
+          dragStart: { x: 0, y: 0 }, // Mouse position where drag started
+
+          // Box Selection State
+          selectionBox: {
+            active: false,
+            startX: 0, startY: 0,
+            width: 0, height: 0
+          },
+          
+          draggableImages: [],
+        });
+
+        let app;
+        const worldContainer = new PIXI.Container();
+        let renderPending = false;
+
+        // Helper: Axis-Aligned Bounding Box (AABB) Intersection
+        // Used to check if an image is inside the drag-select box
+        function rectsIntersect(r1, r2) {
+          return !(r2.x > r1.x + r1.w || 
+                  r2.x + r2.w < r1.x || 
+                  r2.y > r1.y + r1.h || 
+                  r2.y + r2.h < r1.y);
+        }
+
+        /**
+         * The "Render Manager". 
+         * Debounces render calls to ensure efficient drawing.
+         * If multiple tiles load in the same frame, we only render once.
+         */
+        function requestRender() {
+          if (!renderPending) {
+            renderPending = true;
+            requestAnimationFrame(() => {
+              renderScene();
+              renderPending = false;
+            });
+          }
+        }
+
+        /**
+         * The main draw loop.
+         * Syncs Pixi objects with Vue state and triggers WebGL render.
+         */
+        function renderScene() {
+          if (!app) return;
+          
+          // 1. Sync World Container (Camera)
+          worldContainer.x = state.offsetX;
+          worldContainer.y = state.offsetY;
+          worldContainer.scale.set(state.scale);
+
+          // 2. Sync Images
+          state.draggableImages.forEach(img => img.updateVisuals(app, state));
+
+          // 3. Render to Canvas
+          app.renderer.render(app.stage);
+
+          // 4. Update DOM HUD
+          const zoomLabel = document.getElementById('zoom-label');
+          if (zoomLabel) zoomLabel.textContent = `${(state.scale * 100).toFixed(0)}%`;
+
+          // 5. Update Context Popup Bar
+          updateContextPopupBar();
+        }
+
+        /**
+         * Updates the position and visibility of the context popup bar.
+         * Shows above the selection bounding box, clamped to viewport.
+         */
+        function updateContextPopupBar() {
+          const popupBar = document.getElementById('context-popup-bar');
+          if (!popupBar) return;
+
+          // Hide if nothing selected
+          if (state.selection.size === 0) {
+            popupBar.classList.add('hidden');
+            return;
+          }
+
+          // Calculate bounding box of all selected items in world coords
+          let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+          for (const img of state.selection) {
+            minX = Math.min(minX, img.x);
+            minY = Math.min(minY, img.y);
+            maxX = Math.max(maxX, img.x + img.width * img.scale);
+            maxY = Math.max(maxY, img.y + img.height * img.scale);
+          }
+
+          // Convert world coords to screen coords
+          const screenMinX = minX * state.scale + state.offsetX;
+          const screenMaxX = maxX * state.scale + state.offsetX;
+          const screenMinY = minY * state.scale + state.offsetY;
+
+          // Position: centered horizontally, above selection
+          const barWidth = popupBar.offsetWidth;
+          const barHeight = popupBar.offsetHeight;
+          const padding = 12;
+          const gapAboveSelection = 8;
+
+          let x = (screenMinX + screenMaxX) / 2;
+          let y = screenMinY - gapAboveSelection - barHeight;
+
+          // Clamp to viewport bounds
+          const viewWidth = window.innerWidth;
+          const viewHeight = window.innerHeight;
+
+          // Horizontal clamping (account for transform: translateX(-50%))
+          x = Math.max(barWidth / 2 + padding, Math.min(viewWidth - barWidth / 2 - padding, x));
+          
+          // Vertical clamping
+          y = Math.max(padding, Math.min(viewHeight - barHeight - padding, y));
+
+          popupBar.style.left = `${x}px`;
+          popupBar.style.top = `${y}px`;
+          popupBar.classList.remove('hidden');
+
+          // Sync controls with first selected image's values
+          syncPopupControlsToSelection();
+        }
+
+        /**
+         * Syncs the popup bar controls to the first selected image's B/C/colormap.
+         */
+        function syncPopupControlsToSelection() {
+          if (state.selection.size === 0) return;
+          
+          const firstImg = state.selection.values().next().value;
+          
+          const brightnessSlider = document.getElementById('brightness-slider');
+          const contrastSlider = document.getElementById('contrast-slider');
+          const colormapSelect = document.getElementById('colormap-select');
+          
+          if (brightnessSlider && !brightnessSlider.matches(':active')) {
+            brightnessSlider.value = firstImg.brightness;
+          }
+          if (contrastSlider && !contrastSlider.matches(':active')) {
+            contrastSlider.value = firstImg.contrast;
+          }
+          if (colormapSelect && !colormapSelect.matches(':focus')) {
+            colormapSelect.value = firstImg.colormap;
+          }
+        }
+
+        /**
+         * Applies brightness value to all selected images.
+         */
+        function applyBrightnessToSelection(value) {
+          for (const img of state.selection) {
+            img.brightness = parseFloat(value);
+          }
+          requestRender();
+        }
+
+        /**
+         * Applies contrast value to all selected images.
+         */
+        function applyContrastToSelection(value) {
+          for (const img of state.selection) {
+            img.contrast = parseFloat(value);
+          }
+          requestRender();
+        }
+
+        /**
+         * Applies colormap to all selected images.
+         */
+        function applyColormapToSelection(value) {
+          for (const img of state.selection) {
+            img.colormap = value;
+          }
+          requestRender();
+        }
+
+        /**
+         * Fetches metadata for a file and adds it to the scene.
+         * @param {string} filename - The filename on the server.
+         */
+        function addImage(filename) {
+          const BASE_URL = 'http://127.0.0.1:8000';
+          fetch(BASE_URL + '/file/' + encodeURI(filename))
+            .then(res => res.json())
+            .then(metadata => {
+              // Create image instance and pass the render trigger
+              const img = new DraggableImage(
+                0, 0, metadata.shape[1], metadata.shape[0],
+                { filename, ...metadata },
+                requestRender,
+                256, // tileSize
+                4,   // maxZoomLevel
+                2    // lodBias -> Change this to 1 or 2 to test the pixelation effect!
+              );
+              state.draggableImages.push(img);
+              worldContainer.addChild(img.container);
+              
+              requestRender();
+            })
+            .catch(err => console.warn("Backend error: " + err));
+        }
+
+        /**
+         * Bootstraps the demo scene with dummy images.
+         */
+        function setupScene() {
+          addImage('002_IDv3__aa855_s05_c0.tif');
+          addImage('002_IDv3__aa855_s05_c1.tif');
+          addImage('002_IDv3__aa855_s05_c2.tif');
+          addImage('002_IDv3__aa855_s05_c3.tif');
+          // Delay grid arrangement to allow metadata fetches to complete
+          setTimeout(arrangeInGrid, 2000);
+        }
+
+        /**
+         * Calculates the bounding box of all images and adjusts 
+         * camera scale/offset to fit them on screen.
+         */
+        function zoomToFitAllImages() {
+          if (state.draggableImages.length === 0) return;
+          
+          let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+          for (const img of state.draggableImages) {
+            minX = Math.min(minX, img.x);
+            minY = Math.min(minY, img.y);
+            maxX = Math.max(maxX, img.x + img.width * img.scale);
+            maxY = Math.max(maxY, img.y + img.height * img.scale);
+          }
+          
+          if (minX === Infinity) return;
+
+          const boundsWidth = maxX - minX;
+          const boundsHeight = maxY - minY;
+          const padding = 40;
+
+          const scaleX = (app.screen.width - padding * 2) / boundsWidth;
+          const scaleY = (app.screen.height - padding * 2) / boundsHeight;
+          
+          // Update State
+          state.scale = Math.min(scaleX, scaleY);
+          const centerX = (minX + maxX) / 2;
+          const centerY = (minY + maxY) / 2;
+          state.offsetX = app.screen.width / 2 - centerX * state.scale;
+          state.offsetY = app.screen.height / 2 - centerY * state.scale;
+
+          requestRender()
+        }
+
+        /**
+         * Simple layout algorithm to arrange images in a square-ish grid.
+         */
+        function arrangeInGrid() {
+          if (state.draggableImages.length === 0) return;
+          const padding = 50;
+          const images = state.draggableImages;
+          const cols = Math.ceil(Math.sqrt(images.length));
+          const colWidths = [];
+          const rowHeights = [];
+
+          // 1. Measure max dimensions per row/col
+          for (let i = 0; i < images.length; i++) {
+            const col = i % cols;
+            const row = Math.floor(i / cols);
+            const img = images[i];
+            const w = img.width * img.scale;
+            const h = img.height * img.scale;
+            colWidths[col] = Math.max(colWidths[col] || 0, w);
+            rowHeights[row] = Math.max(rowHeights[row] || 0, h);
+          }
+
+          // 2. Assign Positions
+          for (let i = 0; i < images.length; i++) {
+            const col = i % cols;
+            const row = Math.floor(i / cols);
+            const img = images[i];
+            let x = 0;
+            for (let c = 0; c < col; c++) x += colWidths[c] + padding;
+            let y = 0;
+            for (let r = 0; r < row; r++) y += rowHeights[r] + padding;
+            img.x = x;
+            img.y = y;
+          }
+          zoomToFitAllImages();
+        }
+
+        /**
+         * Transforms Screen coordinates (pixels) to World coordinates.
+         * @param {number} screenX 
+         * @param {number} screenY 
+         * @returns {{wx: number, wy: number}}
+         */
+        function screenToWorld(screenX, screenY) {
+          return {
+            wx: (screenX - state.offsetX) / state.scale,
+            wy: (screenY - state.offsetY) / state.scale
+          };
+        }
+
+        onMounted(() => {
+          // Initialize Pixi Application
+          app = new PIXI.Application({
+            resizeTo: document.getElementById('app'),
+            backgroundColor: 0x000000,
+            antialias: true,
+            resolution: window.devicePixelRatio || 1,
+            autoDensity: true,
+            autoStart: false // Manual rendering only
+          });
+          document.getElementById('app').appendChild(app.view);
+          app.stage.addChild(worldContainer);
+
+          const selectionBoxGraphics = new PIXI.Graphics();
+          app.stage.addChild(selectionBoxGraphics)
+
+          function drawSelectionBox() {
+            const g = selectionBoxGraphics;
+            g.clear();
+            if (!state.selectionBox.active) return;
+
+            const { startX, startY, width, height } = state.selectionBox
+
+            // Normalize coordinates to handle negative width/height
+            const x = width < 0 ? startX + width : startX;
+            const y = height < 0 ? startY + height : startY;
+            const w = Math.abs(width);
+            const h = Math.abs(height);
+
+            g.beginFill(0x4a9eff, 0.2); // Semi-transparent blue
+            g.lineStyle(1, 0x4a9eff, 0.8);
+            g.drawRect(x, y, w, h);
+            g.endFill();
+          }
+
+          const view = app.view;
+          
+          // Input Handling
+          view.addEventListener('contextmenu', e => e.preventDefault());
+          
+          // Mouse Down: Hit Testing & Drag Initiation
+          view.addEventListener('mousedown', e => {
+            const { wx, wy } = screenToWorld(e.clientX, e.clientY);
+            
+            // 1. Camera Pan (Middle Click or Alt+Click)
+            if (e.button === 1 || (e.button === 0 && e.altKey)) {
+              state.isPanning = true;
+              state.panStart = { x: e.clientX, y: e.clientY };
+              return;
+            }
+
+            // 2. Left Click
+            if (e.button === 0) {
+              let clickedImage = null;
+
+              // Hit Test (Top-most image first)
+              for (let i = state.draggableImages.length - 1; i >= 0; i--) {
+                const img = state.draggableImages[i];
+                if (img.containsPoint(wx, wy)) {
+                  clickedImage = img;
+                  break;
+                }
+              }
+
+              if (clickedImage) {
+                // --- Scenario A: Clicked an Image ---
+                
+                const isMultiSelect = e.metaKey || e.ctrlKey;
+                const isAlreadySelected = state.selection.has(clickedImage);
+
+                if (isMultiSelect) {
+                  // Toggle selection
+                  if (isAlreadySelected) state.selection.delete(clickedImage);
+                  else state.selection.add(clickedImage);
+                } else {
+                  // Standard click
+                  // If clicking an unselected item, clear others and select this one.
+                  // If clicking an ALREADY selected item, don't clear (user might be starting a drag of the group).
+                  if (!isAlreadySelected) {
+                    state.selection.clear();
+                    state.selection.add(clickedImage);
+                  }
+                }
+
+                // Prepare for Dragging
+                state.isDraggingImages = true;
+                state.dragStart = { x: e.clientX, y: e.clientY };
+
+                // Bring selected items to front visually
+                state.selection.forEach(img => {
+                  worldContainer.removeChild(img.container);
+                  worldContainer.addChild(img.container);
+                });
+
+              } else {
+                // --- Scenario B: Clicked Empty Space ---
+                
+                // Clear selection unless Shift/Cmd is held (optional standard behavior)
+                if (!e.metaKey && !e.ctrlKey) {
+                  state.selection.clear();
+                }
+
+                // Start Box Selection
+                state.selectionBox.active = true;
+                state.selectionBox.startX = e.clientX;
+                state.selectionBox.startY = e.clientY;
+                state.selectionBox.width = 0;
+                state.selectionBox.height = 0;
+              }
+              
+              requestRender();
+            }
+          });
+
+          // Mouse Move: Dragging Logic
+          window.addEventListener('mousemove', e => {
+            let dirty = false;
+
+            // 1. Camera Pan
+            if (state.isPanning) {
+              const dx = e.clientX - state.panStart.x;
+              const dy = e.clientY - state.panStart.y;
+              state.offsetX += dx;
+              state.offsetY += dy;
+              state.panStart = { x: e.clientX, y: e.clientY };
+              dirty = true;
+            }
+
+            // 2. Image Drag (Move all selected items)
+            if (state.isDraggingImages && state.selection.size > 0) {
+              const dx = e.clientX - state.dragStart.x;
+              const dy = e.clientY - state.dragStart.y;
+
+              // Convert screen delta to world delta
+              const worldDx = dx / state.scale;
+              const worldDy = dy / state.scale;
+
+              state.selection.forEach(img => {
+                img.x += worldDx;
+                img.y += worldDy;
+              });
+
+              state.dragStart = { x: e.clientX, y: e.clientY };
+              dirty = true;
+            }
+
+            // 3. Box Selection
+            if (state.selectionBox.active) {
+              const currentX = e.clientX;
+              const currentY = e.clientY;
+              
+              // Calculate width/height (allowing for negative drags)
+              state.selectionBox.width = currentX - state.selectionBox.startX;
+              state.selectionBox.height = currentY - state.selectionBox.startY;
+              
+              // Draw the box immediately
+              drawSelectionBox();
+              dirty = true;
+            }
+
+            if (dirty) requestRender();
+          });
+
+          // Mouse Up: End Dragging
+          window.addEventListener('mouseup', () => {
+            // End Pan/Drag
+            state.isPanning = false;
+            state.isDraggingImages = false;
+
+            // End Box Selection & Calculate Hits
+            if (state.selectionBox.active) {
+              // 1. Normalize Screen Box (handle negative width/height)
+              const sx = state.selectionBox.width > 0 ? state.selectionBox.startX : state.selectionBox.startX + state.selectionBox.width;
+              const sy = state.selectionBox.height > 0 ? state.selectionBox.startY : state.selectionBox.startY + state.selectionBox.height;
+              const sw = Math.abs(state.selectionBox.width);
+              const sh = Math.abs(state.selectionBox.height);
+
+              // 2. Convert to World Coordinates
+              // (Top-left and Bottom-right corners)
+              const tl = screenToWorld(sx, sy);
+              const br = screenToWorld(sx + sw, sy + sh);
+              
+              const worldBox = {
+                x: tl.wx,
+                y: tl.wy,
+                w: br.wx - tl.wx,
+                h: br.wy - tl.wy
+              };
+
+              // 3. Find Intersections
+              state.draggableImages.forEach(img => {
+                const imgBox = {
+                  x: img.x,
+                  y: img.y,
+                  w: img.width * img.scale,
+                  h: img.height * img.scale
+                };
+
+                if (rectsIntersect(worldBox, imgBox)) {
+                  state.selection.add(img);
+                }
+              });
+
+              // Reset Box
+              state.selectionBox.active = false;
+              selectionBoxGraphics.clear();
+              requestRender();
+            }
+          });
+
+          // Wheel: Zoom Logic
+          view.addEventListener('wheel', e => {
+            e.preventDefault();
+            if (e.ctrlKey) {
+              // Zoom towards mouse pointer
+              const zoomIntensity = 0.002; 
+              const delta = -e.deltaY;
+              const newScale = Math.max(0.01, state.scale * (1 + delta * zoomIntensity));
+              const rect = view.getBoundingClientRect();
+              const mx = e.clientX - rect.left;
+              const my = e.clientY - rect.top;
+              
+              // Math to keep point under mouse stationary
+              state.offsetX -= (mx - state.offsetX) * (newScale / state.scale - 1);
+              state.offsetY -= (my - state.offsetY) * (newScale / state.scale - 1);
+              state.scale = newScale;
+            } else {
+              // Pan
+              state.offsetX -= e.deltaX;
+              state.offsetY -= e.deltaY;
+            }
+            requestRender();
+          }, { passive: false });
+
+          // Keyboard Shortcuts
+          window.addEventListener('keydown', e => {
+            if (e.code === 'KeyF') zoomToFitAllImages();
+            if (e.code === 'KeyG') arrangeInGrid();
+          });
+          document.getElementById('fit-btn').addEventListener('click', zoomToFitAllImages);
+          document.getElementById('grid-btn').addEventListener('click', arrangeInGrid);
+
+          // Popup Bar Controls
+          document.getElementById('brightness-slider').addEventListener('input', e => {
+            applyBrightnessToSelection(e.target.value);
+          });
+          document.getElementById('contrast-slider').addEventListener('input', e => {
+            applyContrastToSelection(e.target.value);
+          });
+          document.getElementById('colormap-select').addEventListener('change', e => {
+            applyColormapToSelection(e.target.value);
+          });
+          
+          // Window Resize
+          window.addEventListener('resize', () => {
+            app.renderer.resize(document.getElementById('app').offsetWidth, document.getElementById('app').offsetHeight);
+            requestRender();
+          });
+
+          // Initialize Data
+          setupScene();
+          
+          // TODO { deep: true } causes MASSIVE lag, because its activating even on coord change
+          // Watcher: Auto-render when reactive state changes
+          // watch(state, () => {
+          //   // TODO: FIX this watcher. For some reason it keeps detecting changes,
+          //   // causing an infinite loop. I suspect a cycle somewhere.
+          //   requestRender();
+          // }, { deep: true });
+
+          // Watch ONLY the active image reference
+          watch(() => state.activeDraggableImage, (newImg, oldImg) => {
+            if (oldImg) oldImg.selected = false
+            if (newImg) newImg.selected = true
+            requestRender();
+          });
+
+          watchEffect(() => {
+            state.draggableImages.forEach((img) => img.selected = state.selection.has(img))
+          })
+
+          // Initial Draw
+          requestRender();
+        });
+        return {};
+      }
+    }).mount('#app');
+  </script>
+</body>
+</html>

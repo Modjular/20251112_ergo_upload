@@ -1,0 +1,140 @@
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Tile Fetch Debug</title>
+<style>
+  body {
+    margin: 0;
+    background: #111;
+    color: #ddd;
+    font-family: sans-serif;
+  }
+  #main {
+    background: #222;
+    display: block;
+    margin: 0;
+  }
+</style>
+</head>
+<body>
+
+<canvas id="main" width="1200" height="800"></canvas>
+
+<script>
+// ---------------------------------------------------------------------------
+// Utility to convert Uint16 tile data to ImageData (example grayscale version)
+// Replace with your actual version if needed.
+// ---------------------------------------------------------------------------
+function uint16ToImageData(uint16Data, width, height) {
+  const imageData = new ImageData(width, height);
+  const rgba = imageData.data;
+
+  let min = Infinity, max = -Infinity;
+  for (let i = 0; i < uint16Data.length; i++) {
+    min = Math.min(min, uint16Data[i]);
+    max = Math.max(max, uint16Data[i]);
+  }
+  const range = max - min || 1;
+
+  for (let i = 0; i < uint16Data.length; i++) {
+    // const val = Math.floor(((uint16Data[i] - min) / range) * 255);
+    const val = (uint16Data[i]/4000) * 255
+    const idx = i * 4;
+    rgba[idx] = val;
+    rgba[idx + 1] = val;
+    rgba[idx + 2] = val;
+    rgba[idx + 3] = 255;
+  }
+
+  debugger
+  return imageData;
+}
+
+// ---------------------------------------------------------------------------
+// Tile Loader Class
+// ---------------------------------------------------------------------------
+class TileDebugger {
+  constructor(ctx) {
+    this.ctx = ctx;
+    this.tiles = new Map();
+    this.metadata = { filename: "002_IDv3__aa855_s05_c1.tif" };
+  }
+
+  fetchTile(tile) {
+    const BASE_URL = "http://127.0.0.1:8000";
+    const { tz, ty, tx, level, tileSize } = tile;
+    const key = `L${level}_Z${tz}_${ty}_${tx}`;
+    const { filename } = this.metadata;
+
+    if (this.tiles.has(key)) return;
+
+    this.tiles.set(key, { loading: true });
+
+    fetch(BASE_URL + "/tile/" + encodeURI(filename) + "/" + key)
+      .then(res => res.arrayBuffer())
+      .then(buffer => {
+        const uint16Data = new Uint16Array(buffer);
+        const dim = Math.sqrt(uint16Data.length);
+        const imageData = uint16ToImageData(uint16Data, dim, dim);
+
+        const offscreen = document.createElement("canvas");
+        offscreen.width = dim;
+        offscreen.height = dim;
+        const offCtx = offscreen.getContext("2d");
+        offCtx.putImageData(imageData, 0, 0);
+
+        this.tiles.set(key, { imageData, canvas: offscreen });
+
+        // DEBUG DRAW ON MAIN CANVAS
+        const dx = tx * (dim + 4);
+        const dy = ty * (dim + 4);
+
+        this.ctx.drawImage(offscreen, dx, dy);
+
+        this.ctx.strokeStyle = "red";
+        this.ctx.strokeRect(dx, dy, dim, dim);
+        this.ctx.fillStyle = "red";
+        this.ctx.font = "12px sans-serif";
+        this.ctx.fillText(key, dx + 4, dy + 14);
+
+        console.debug("Fetched", key);
+      })
+      .catch(err => {
+        this.tiles.delete(key);
+        console.error("Failed to fetch tile", key, err);
+      });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Example: Fetch a block of tiles to visualize
+// (Modify ranges to match your dataset.)
+// ---------------------------------------------------------------------------
+window.onload = () => {
+  const canvas = document.getElementById("main");
+  const ctx = canvas.getContext("2d");
+
+  const debuggerInstance = new TileDebugger(ctx);
+
+  // Example tile requests.
+  // Adjust tx/ty/tz/level/tileSize for your system.
+  const level = 2;
+  const tz = 0;
+  const tileSize = 256;
+
+  for (let ty = 0; ty < 2; ty++) {
+    for (let tx = 0; tx < 2; tx++) {
+      debuggerInstance.fetchTile({
+        tz,
+        ty,
+        tx,
+        level,
+        tileSize
+      });
+    }
+  }
+};
+</script>
+
+</body>
+</html>

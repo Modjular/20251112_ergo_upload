@@ -102,18 +102,6 @@ def root():
 def canvas():
     return FileResponse("canvas.html", media_type="text/html")
 
-@app.get("/canvas_amp")
-def canvas_amp():
-    return FileResponse("canvas_amp.html", media_type="text/html")
-
-@app.get("/canvas_chatgpt")
-def canvas_chatgpt():
-    return FileResponse("canvas_chatgpt.html", media_type="text/html")
-
-@app.get("/canvas_gemini")
-def canvas_gemini():
-    return FileResponse("canvas_gemini.html", media_type="text/html")
-
 @app.get("/debug_canvas")
 def debug_canvas():
     return FileResponse("debug_canvas.html", media_type="text/html")
@@ -167,14 +155,3 @@ def get_tiles(filename: str, tilekey: str):
     img = tifffile.imread(filepath)
     return Response(content=img.tobytes(), media_type="application/octet-stream")
 
-
-'''
-Notes 11/20/25
-### Sessions
- - When you navigate to */session/{id}, it either loads a pre-existing one, or it inits a new one
- - A session simply points to pre-existing assets. That is, assets are reused across sessions
- - Assets are loaded as lazily as possible:
-    - Pyramids are generated only for current zplane
-    - Given that pyramids are 'invisible', should there be an entirely new table for them, or simply a hidden folder at the same level, checked during runtime?
-    - 
-'''

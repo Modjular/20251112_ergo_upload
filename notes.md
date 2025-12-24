@@ -78,7 +78,31 @@ I've been chewing on what to tackle next.
 **Multi-Selection**
 Once again, it gave good, working code and the only errors were mine. However, it didn't accout for 'backwards' selection (when xy1 and xy2 need to swap) and the tiles don't become 'selected', but thats a small visual issue.
 
+
 ### 12/17/25
 Multi-selection highlights aren't working. Actually, selection in general isn't working. I should add the boxes back now that we have watchers for 'selected'
 
 Done. But now I'm wondering if the multiple watchers (and `watchEffect`) are causing performance issues. It looks like our long draw frames are being caused by mostly Vue reactivity activity.
+
+
+### 12/19/25
+Had Gemini Pro give the refactor a shot. I think I should revert back to pre-shader, have it try from scratch
+
+
+### 12/22/25
+Where should we go from here? Try to fix the buggy-but-working one? Or start the feature from scratch? I'm tempted to have both Amp and Gemini give it a go and see who performs better.
+
+I got time. Might as well.
+
+After 3 or so tries, Gemini has not been able to properly port the code to utilize shaders. Might need to implement by hand.
+
+
+### 12/24/25
+After a lot of failed one-shotting, its time to implement the shader by hand.
+
+Things are more stable and organized now: 
+ - Reverted to 7c4d4ff826caa7578ffa5f93bc3b85176c9e4203
+ - Removed any shader code
+ - Had Gemini Pro 3 preserve logic BUT refactor by logical concerns to increase readability.
+
+Ready to tackle shaders by hand.

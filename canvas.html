@@ -1,773 +1,746 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <title>DeepZoom Viewer</title>
+  <meta charset="UTF-8">
+  <title>DeepZoom</title>
   <style>
-    /* CSS Refactor: Grouped logically and used CSS variables for theme */
-    :root {
-      --bg-color: #2c2c34;
-      --overlay-bg: rgba(0, 0, 0, 0.6);
-      --accent-color: #4a9eff;
-      --text-color: #ffffff;
-    }
-
-    html,
-    body {
-      margin: 0;
-      height: 100%;
-      overflow: hidden;
-      background: var(--bg-color);
-    }
-    #app {
-      width: 100%;
-      height: 100%;
-      position: relative;
-    }
-    canvas {
-      display: block;
-      width: 100%;
-      height: 100%;
-    }
-
-    /* HUD Layer */
-    .hud-layer {
-      position: absolute;
-      inset: 0;
-      pointer-events: none;
-      z-index: 10;
-      display: flex;
-      flex-direction: column;
-      justify-content: space-between;
-      p: 12px;
-    }
-    .hud-layer > * {
-      pointer-events: auto;
-    }
-
-    .hud-top-left {
-      position: absolute;
-      top: 12px;
-      left: 12px;
-    }
-    .hud-bottom-right {
-      position: absolute;
-      bottom: 12px;
-      right: 12px;
-    }
-
-    .label-badge {
-      background: var(--overlay-bg);
-      color: var(--text-color);
-      padding: 4px 8px;
-      border-radius: 4px;
-      font-family: monospace;
-      font-size: 12px;
-    }
-
-    .btn {
-      background: var(--overlay-bg);
-      color: var(--text-color);
-      border: none;
-      padding: 6px 12px;
-      border-radius: 4px;
-      cursor: pointer;
-      margin-left: 8px;
-    }
-    .btn:hover {
-      background: rgba(0, 0, 0, 0.8);
-    }
-
-    /* Context Menu */
-    .context-bar {
-      position: absolute;
-      display: flex;
-      gap: 4px;
-      padding: 6px 8px;
-      background: var(--bg-color);
-      border-radius: 8px;
-      box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.1);
-      transform: translateX(-50%);
-      z-index: 20;
-      pointer-events: auto;
-    }
-    /* Vue transition for smooth popup */
-    .fade-enter-active,
-    .fade-leave-active {
-      transition: opacity 0.2s, transform 0.2s;
-    }
-    .fade-enter-from,
-    .fade-leave-to {
-      opacity: 0;
-      transform: translate(-50%, 10px);
-    }
+    /* --- CSS Styles (Unchanged) --- */
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #2c2c34; }
+    #app { width: 100%; height: 100%; touch-action: none; position: relative; }
+    canvas { display: block; width: 100%; height: 100%; }
+    viewport-hud { position: absolute; inset: 0; pointer-events: none; display: block; z-index: 10; }
+    viewport-hud > * { pointer-events: auto; }
+    .hud-top-left { position: absolute; top: 12px; left: 12px; }
+    .hud-bottom-right { position: absolute; bottom: 12px; right: 12px; }
+    .hud-label { background: rgba(0,0,0,0.6); color: #fff; padding: 4px 8px; border-radius: 4px; font-family: monospace; font-size: 12px; }
+    .hud-btn { background: rgba(0,0,0,0.6); color: #fff; border: none; padding: 6px 12px; border-radius: 4px; font-family: sans-serif; font-size: 12px; cursor: pointer; margin-left: 1ch; }
+    .hud-btn:hover { background: rgba(0,0,0,0.8); }
+    .context-popup-bar { position: absolute; display: flex; align-items: center; gap: 4px; padding: 6px 8px; background: #2c2c34; border-radius: 8px; box-shadow: 0 2px 12px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.1); pointer-events: auto; transform: translateX(-50%); z-index: 20; }
+    .context-popup-bar.hidden { display: none; }
+    .context-popup-bar button { background: transparent; border: none; color: #fff; padding: 6px 12px; border-radius: 4px; font-family: sans-serif; font-size: 13px; cursor: pointer; white-space: nowrap; }
+    .context-popup-bar button:hover { background: rgba(255,255,255,0.1); }
   </style>
 </head>
 <body>
   <div id="app">
-    <div class="hud-layer">
+    <viewport-hud>
       <div class="hud-top-left">
-        <span class="label-badge">{{ zoomPercentage }}%</span>
-        <span class="label-badge" v-if="loadingCount > 0">Loading: {{ loadingCount }}</span>
+        <span id="zoom-label" class="hud-label">{{ (camera.scale * 100).toFixed(0) }}%</span>
       </div>
-
       <div class="hud-bottom-right">
-        <button class="btn" @click="layoutGrid">Grid (G)</button>
-        <button class="btn" @click="fitAll">Fit All (F)</button>
+        <button id="grid-btn" class="hud-btn" @click="layoutGrid">Grid (G)</button>
+        <button id="fit-btn" class="hud-btn" @click="fitAll">Fit All (F)</button>
       </div>
 
-      <transition name="fade">
-        <div
-          v-if="showContextBar"
-          class="context-bar"
-          :style="{ left: contextBarPos.x + 'px', top: contextBarPos.y + 'px' }"
-        >
-          <button class="btn" @click="alert('Action!')">Action ({{ selectionCount }})</button>
-        </div>
-      </transition>
-    </div>
+      <!-- Context Popup bar -->
+      <div id="context-popup-bar" class="context-popup-bar hidden">
+        <button id="popup-action-btn">Action</button>
+      </div>
+    </viewport-hud>
   </div>
 
-  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.3.2/pixi.min.js"></script>
+  <!-- <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script> -->
+  <!-- <script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.3.2/pixi.min.js"></script> -->
+  <script src="/assets/js/vue.min.js"></script>
+  <script src="/assets/js/pixi.min.js"></script>
 
   <script>
-    const { createApp, ref, computed, onMounted, reactive, shallowRef } = Vue
+    const { createApp, onMounted, reactive, watch, toRefs } = Vue;
 
-    // --- 1. CONFIGURATION & CONSTANTS ---
-    const CONFIG = {
-      API_BASE: 'http://127.0.0.1:8000',
-      COLORS: {
-        BG_IMAGE: 0x646496,
-        SELECTION: 0x4a9eff,
-        BOX_FILL: 0x4a9eff,
-      },
-      ZOOM: { MIN: 0, MAX: 4, BIAS: 2 },
+    // ==========================================
+    // MODULE 1: Constants & Utilities
+    // ==========================================
+    const Config = {
+      BASE_URL: 'http://127.0.0.1:8000',
       TILE_SIZE: 256,
-      DBL_CLICK_TIME: 300,
-    }
+      MAX_ZOOM: 4,
+      LOD_BIAS: 2,
+      COLORS: {
+        BG: 0x646496,
+        SELECTION: 0x4a9eff
+      }
+    };
 
-    // --- 2. UTILITIES & GEOMETRY ---
-    const Geom = {
-      // Axis-Aligned Bounding Box intersection
-      rectIntersect: (r1, r2) =>
-        !(r2.x > r1.x + r1.w || r2.x + r2.w < r1.x || r2.y > r1.y + r1.h || r2.y + r2.h < r1.y),
+    const MathUtils = {
+      /** Axis-Aligned Bounding Box intersection */
+      rectsIntersect(r1, r2) {
+        return !(r2.x > r1.x + r1.w || 
+                 r2.x + r2.w < r1.x || 
+                 r2.y > r1.y + r1.h || 
+                 r2.y + r2.h < r1.y);
+      },
 
-      // Screen (Pixels) -> World (Canvas Units)
-      screenToWorld: (sx, sy, stage) => ({
-        x: (sx - stage.x) / stage.scale.x,
-        y: (sy - stage.y) / stage.scale.y,
-      }),
+      /** Screen pixel -> World coordinate conversion */
+      screenToWorld(screenX, screenY, cameraState) {
+        return {
+          x: (screenX - cameraState.offsetX) / cameraState.scale,
+          y: (screenY - cameraState.offsetY) / cameraState.scale
+        };
+      },
+      
+      /** * 16-bit array to Texture conversion.
+       * [OPTIMIZATION]: This creates a new Canvas/Context for every single tile fetch.
+       * For high-throughput apps, use a WebGL shader to render Uint16 directly,
+       * or use an OffscreenCanvas pool to reduce GC overhead.
+       */
+      uint16ToTexture(uint16Data, width, height) {
+        const bufferCanvas = document.createElement('canvas');
+        bufferCanvas.width = width;
+        bufferCanvas.height = height;
+        const ctx = bufferCanvas.getContext('2d');
+        const imageData = ctx.createImageData(width, height);
+        const rgba = imageData.data;
 
-      // Normalize a box created by dragging (handle negative width)
-      normalizeBox: (x, y, w, h) => ({
-        x: w < 0 ? x + w : x,
-        y: h < 0 ? y + h : y,
-        w: Math.abs(w),
-        h: Math.abs(h),
-      }),
-    }
+        // [FIX]: Hardcoded normalization range (0-4000). 
+        // Ideally, this should come from image metadata (histogram).
+        let min = 0, max = 4000;
+        const range = max - min || 1;
 
-    // --- 3. PIXI VIEW CLASSES ---
+        for (let i = 0; i < uint16Data.length; i++) {
+          const val = Math.floor(((uint16Data[i] - min) / range) * 255);
+          const idx = i * 4;
+          rgba[idx] = val;     // R
+          rgba[idx + 1] = val; // G
+          rgba[idx + 2] = val; // B
+          rgba[idx + 3] = 255; // Alpha
+        }
+
+        ctx.putImageData(imageData, 0, 0);
+        return PIXI.Texture.from(bufferCanvas);
+      }
+    };
+
+    // ==========================================
+    // MODULE 2: Core Domain Logic
+    // ==========================================
 
     /**
-      * Service to fetch and format 16-bit data.
-      * Decoupled from the visual component.
-      */
-    class TileService {
-      static async fetchTileTexture(filename, key, level, width, height) {
-        const url = `${CONFIG.API_BASE}/tile/${encodeURI(filename)}/${key}`
-        try {
-          const res = await fetch(url)
-          const buffer = await res.arrayBuffer()
-          const uint16 = new Uint16Array(buffer)
-          return this._uint16ToTexture(uint16, width, height)
-        } catch (e) {
-          console.error(`Failed to load tile ${key}`, e)
-          return null
-        }
-      }
-
-      static _uint16ToTexture(data, w, h) {
-        const canvas = document.createElement('canvas')
-        canvas.width = w
-        canvas.height = h
-        const ctx = canvas.getContext('2d')
-        const imgData = ctx.createImageData(w, h)
-        const rgba = imgData.data
-
-        // Simple normalization (0-4000 -> 0-255)
-        // Optimization: Use a lookup table or WebGL shader in production
-        for (let i = 0; i < data.length; i++) {
-          const val = Math.min(255, (data[i] / 4000) * 255)
-          const idx = i * 4
-          rgba[idx] = rgba[idx + 1] = rgba[idx + 2] = val
-          rgba[idx + 3] = 255
-        }
-        ctx.putImageData(imgData, 0, 0)
-        return PIXI.Texture.from(canvas, { scaleMode: PIXI.SCALE_MODES.NEAREST })
-      }
-    }
-
-    /**
-      * DeepZoomSprite: Handles LOD logic and rendering for a specific image.
-      * It does NOT handle input or global state.
-      */
-    class DeepZoomSprite extends PIXI.Container {
-      constructor(metadata, onTextureLoad) {
-        super()
-        this.metadata = metadata
-        this.onTextureLoad = onTextureLoad // Callback to request redraw
+     * DeepZoomImage (Refactored DraggableImage)
+     * Encapsulates the Pixi display logic and the Tile LOD mathematics.
+     */
+    class DeepZoomImage {
+      constructor(x, y, metadata, onRequestRender) {
+        // Data Model
+        this.x = x;
+        this.y = y;
+        this.width = metadata.shape[1]; // shape is usually [y, x]
+        this.height = metadata.shape[0];
+        this.scale = 1;
+        this.selected = false;
+        this.metadata = metadata;
+        
+        // Dependencies
+        this.onRequestRender = onRequestRender;
 
         // State
-        this.isSelected = false
-        this.tiles = new Map() // Cache
-        this.fullWidth = metadata.shape[1]
-        this.fullHeight = metadata.shape[0]
-
-        // Layers
-        this.bg = new PIXI.Graphics()
-        this.tileLayer = new PIXI.Container()
-        this.overlay = new PIXI.Graphics()
-
-        this.tileLayer.sortableChildren = true
-        this.addChild(this.bg, this.tileLayer, this.overlay)
-
-        this._drawPlaceholder()
+        this.tiles = new Map(); // Cache
+        
+        // Visuals (Pixi)
+        this.container = new PIXI.Container();
+        this._initVisuals();
       }
 
-      _drawPlaceholder() {
-        this.bg.clear()
-        this.bg.beginFill(CONFIG.COLORS.BG_IMAGE, 0.3)
-        this.bg.drawRect(0, 0, this.fullWidth, this.fullHeight)
-        this.bg.endFill()
+      _initVisuals() {
+        this.bgGraphics = new PIXI.Graphics();
+        this.tileContainer = new PIXI.Container();
+        this.tileContainer.sortableChildren = true; // Essential for LOD stacking
+        this.overlayGraphics = new PIXI.Graphics();
+        
+        this.textLabel = new PIXI.Text('', {
+          fontFamily: 'monospace', fontSize: 14, fill: 0xaaaaaa,
+        });
+        this.overlayGraphics.addChild(this.textLabel);
+
+        this.container.addChild(this.bgGraphics, this.tileContainer, this.overlayGraphics);
       }
 
-      updateSelection(selected) {
-        if (this.isSelected === selected) return
-        this.isSelected = selected
-        this.overlay.clear()
-        if (selected) {
-          // Inverse scale line width so it stays constant on screen
-          const lineWidth = 2 / this.parent.scale.x
-          this.overlay.lineStyle(lineWidth, CONFIG.COLORS.SELECTION, 1)
-          this.overlay.drawRect(0, 0, this.fullWidth, this.fullHeight)
-          this.zIndex = 1 // Bring selected images to front
-        } else {
-          this.zIndex = 0
-        }
+      /** Checks if point is inside this image (World Coords) */
+      hitTest(wx, wy) {
+        return wx >= this.x && wx <= this.x + this.width * this.scale &&
+               wy >= this.y && wy <= this.y + this.height * this.scale;
       }
 
       /**
-        * Main LOD Loop. Called every render frame.
-        * @param {PIXI.Rectangle} viewportRect - Visible world area
-        * @param {number} worldScale - Current camera zoom
-        */
-      cullAndLOD(viewportRect, worldScale) {
-        // 1. Check if image is visible at all
-        const myRect = new PIXI.Rectangle(this.x, this.y, this.fullWidth, this.fullHeight)
-        if (
-          !Geom.rectIntersect(
-            {
-              x: viewportRect.x,
-              y: viewportRect.y,
-              w: viewportRect.width,
-              h: viewportRect.height,
-            },
-            { x: this.x, y: this.y, w: this.fullWidth, h: this.fullHeight }
-          )
-        ) {
-          this.visible = false
-          return
-        }
-        this.visible = true
+       * Core LOD Logic (The "Painter's Algorithm").
+       * Preserved from original code.
+       */
+      computeVisibleTiles(appScreen, cameraState) {
+        const worldScale = cameraState.scale * this.scale;
+        
+        // 1. Calculate Target LOD
+        let targetLevel = Math.floor(Math.log2(1 / worldScale)) + Config.LOD_BIAS;
+        targetLevel = Math.min(Math.max(targetLevel, 0), Config.MAX_ZOOM);
 
-        // 2. Determine Zoom Level
-        // Log2(1/scale) gives us the MIP level.
-        let targetLevel = Math.floor(Math.log2(1 / worldScale)) + CONFIG.ZOOM.BIAS
-        targetLevel = Math.min(Math.max(targetLevel, 0), CONFIG.ZOOM.MAX)
+        // 2. Viewport Culling
+        const viewportX = -cameraState.offsetX / cameraState.scale;
+        const viewportY = -cameraState.offsetY / cameraState.scale;
+        const viewportW = appScreen.width / cameraState.scale;
+        const viewportH = appScreen.height / cameraState.scale;
 
-        // 3. Reconcile Tiles
-        this.reconcileTiles(targetLevel, viewportRect)
-      }
+        // Convert Viewport to Local Image Space
+        const ix0 = (viewportX - this.x) / this.scale;
+        const iy0 = (viewportY - this.y) / this.scale;
+        const ix1 = (viewportX + viewportW - this.x) / this.scale;
+        const iy1 = (viewportY + viewportH - this.y) / this.scale;
 
-      reconcileTiles(targetLevel, viewportRect) {
-        const visibleKeys = new Set()
+        const cx0 = Math.max(0, ix0);
+        const cy0 = Math.max(0, iy0);
+        const cx1 = Math.min(this.width, ix1);
+        const cy1 = Math.min(this.height, iy1);
 
-        // Iterate levels from Target (High Detail) -> Max (Low Detail)
-        // We draw lower res tiles if high res aren't loaded yet (Painter's algo)
-        for (let level = targetLevel; level <= CONFIG.ZOOM.MAX; level++) {
-          const size = CONFIG.TILE_SIZE * Math.pow(2, level)
+        const newVisibleKeys = new Set();
 
-          // Calculate grid bounds relative to image origin
-          const startX = Math.max(0, viewportRect.x - this.x)
-          const startY = Math.max(0, viewportRect.y - this.y)
-          const endX = Math.min(this.fullWidth, viewportRect.x + viewportRect.width - this.x)
-          const endY = Math.min(this.fullHeight, viewportRect.y + viewportRect.height - this.y)
+        // 3. Recursive Visibility Loop (High Res -> Low Res)
+        for (let level = targetLevel; level <= Config.MAX_ZOOM; level++) {
+          const effectiveTileSize = Config.TILE_SIZE * Math.pow(2, level);
+          const tx0 = Math.floor(cx0 / effectiveTileSize);
+          const ty0 = Math.floor(cy0 / effectiveTileSize);
+          const tx1 = Math.floor(cx1 / effectiveTileSize);
+          const ty1 = Math.floor(cy1 / effectiveTileSize);
 
-          const col0 = Math.floor(startX / size)
-          const row0 = Math.floor(startY / size)
-          const col1 = Math.floor(endX / size)
-          const row1 = Math.floor(endY / size)
+          for (let ty = ty0; ty <= ty1; ty++) {
+            for (let tx = tx0; tx <= tx1; tx++) {
+              const tileX0 = tx * effectiveTileSize;
+              const tileY0 = ty * effectiveTileSize;
+              
+              const tileWidth = Math.round(Math.min(effectiveTileSize, this.width - tileX0) / Math.pow(2, level));
+              const tileHeight = Math.round(Math.min(effectiveTileSize, this.height - tileY0) / Math.pow(2, level));
 
-          for (let r = row0; r <= row1; r++) {
-            for (let c = col0; c <= col1; c++) {
-              const key = `L${level}_${r}_${c}`
-              visibleKeys.add(key)
+              if (tileWidth <= 0 || tileHeight <= 0) continue;
 
-              if (!this.tiles.has(key)) {
-                // Only fetch if it's the target level (performance)
-                if (level === targetLevel) this._loadTile(key, level, c, r, size)
-              } else {
-                const tile = this.tiles.get(key)
-                if (tile.sprite) {
-                  tile.sprite.visible = true
-                  tile.sprite.zIndex = CONFIG.ZOOM.MAX - level // High res on top
-                }
-              }
+              const tileData = { tz: 0, ty, tx, level, effectiveTileSize, tileWidth, tileHeight };
+              const key = `L${level}_Z0_${ty}_${tx}`;
+              
+              newVisibleKeys.add(key);
+
+              // Only fetch if it's the target level
+              const shouldFetch = (level === targetLevel);
+              this._syncTileSprite(tileData, key, shouldFetch);
             }
           }
         }
 
-        // Hide non-visible tiles
-        for (const [key, tile] of this.tiles) {
-          if (!visibleKeys.has(key) && tile.sprite) {
-            tile.sprite.visible = false
+        // 4. Cleanup invisible sprites
+        for (const [key, data] of this.tiles.entries()) {
+          if (!newVisibleKeys.has(key) && data.sprite) {
+            data.sprite.visible = false;
           }
         }
       }
 
-      async _loadTile(key, level, col, row, size) {
-        // Placeholder entry to prevent double-fetching
-        this.tiles.set(key, { loading: true, sprite: null })
+      _syncTileSprite(tile, key, shouldFetch) {
+        let cached = this.tiles.get(key);
 
-        // Calculate actual dimensions (edge tiles might be smaller)
-        const x = col * size
-        const y = row * size
-        const w = Math.min(size, this.fullWidth - x) / Math.pow(2, level)
-        const h = Math.min(size, this.fullHeight - y) / Math.pow(2, level)
-
-        const texture = await TileService.fetchTileTexture(
-          this.metadata.filename,
-          `L${level}_Z0_${row}_${col}`,
-          level,
-          w,
-          h
-        )
-
-        if (texture) {
-          const sprite = new PIXI.Sprite(texture)
-          sprite.x = x
-          sprite.y = y
-          sprite.scale.set(Math.pow(2, level)) // Scale up low-res tiles to cover area
-          this.tileLayer.addChild(sprite)
-
-          this.tiles.set(key, { loading: false, sprite })
-          this.onTextureLoad() // Trigger render
-        } else {
-          this.tiles.delete(key) // Retry later
+        if (!cached) {
+          if (shouldFetch) {
+            this.tiles.set(key, { loading: true, sprite: null, texture: null, level: tile.level });
+            this._fetchTile(tile, key);
+          }
+          return;
         }
+
+        // Lazy Sprite Creation
+        if (cached.texture && !cached.sprite) {
+          const sprite = new PIXI.Sprite(cached.texture);
+          this.tileContainer.addChild(sprite);
+          cached.sprite = sprite;
+        }
+
+        // Update Sprite
+        if (cached.sprite) {
+          cached.sprite.visible = true;
+          cached.sprite.x = tile.tx * tile.effectiveTileSize;
+          cached.sprite.y = tile.ty * tile.effectiveTileSize;
+          
+          const scaleFactor = Math.pow(2, tile.level);
+          cached.sprite.width = tile.tileWidth * scaleFactor;
+          cached.sprite.height = tile.tileHeight * scaleFactor;
+          // [FIX] Ensure proper Z-ordering (High res on top)
+          cached.sprite.zIndex = Config.MAX_ZOOM - tile.level;
+        }
+      }
+
+      _fetchTile(tile, key) {
+        // [OPTIMIZATION]: A dedicated request queue/manager would prevent 
+        // spamming the server if the user pans quickly.
+        fetch(`${Config.BASE_URL}/tile/${encodeURI(this.metadata.filename)}/${key}`)
+          .then(res => res.arrayBuffer())
+          .then(buffer => {
+            // Check if still in cache (might have been culled)
+            const cached = this.tiles.get(key);
+            if (!cached) return;
+
+            const uint16Data = new Uint16Array(buffer);
+            const texture = MathUtils.uint16ToTexture(uint16Data, tile.tileWidth, tile.tileHeight);
+            
+            cached.texture = texture;
+            cached.loading = false;
+            cached.texture.baseTexture.scaleMode = PIXI.SCALE_MODES.NEAREST;
+            
+            // Sync immediately, but don't fetch again
+            this._syncTileSprite(tile, key, false);
+            this.onRequestRender();
+          })
+          .catch(err => {
+            this.tiles.delete(key); // Retry later
+            console.warn("Tile fetch failed", err);
+          });
+      }
+
+      /** Main Update Loop for this object */
+      render(app, cameraState) {
+        // Update Transform
+        this.container.x = this.x;
+        this.container.y = this.y;
+        this.container.scale.set(this.scale);
+
+        // Update UI Overlays
+        this.bgGraphics.clear();
+        this.bgGraphics.beginFill(Config.COLORS.BG, 0.3);
+        this.bgGraphics.drawRect(0, 0, this.width, this.height);
+        this.bgGraphics.endFill();
+
+        this.overlayGraphics.clear();
+        if (this.selected) {
+          // Invert visual scale for line width so it stays constant 2px on screen
+          const lineWidth = 2 / (cameraState.scale * this.scale);
+          this.overlayGraphics.lineStyle(lineWidth, Config.COLORS.SELECTION, 1);
+          this.overlayGraphics.drawRect(0, 0, this.width, this.height);
+        }
+
+        this.textLabel.text = `${(this.scale * 100).toFixed(0)}%`;
+        this.textLabel.x = 5 / this.scale;
+        this.textLabel.y = 20 / this.scale;
+        this.textLabel.scale.set(1 / this.scale);
+
+        // LOD Calculation
+        this.computeVisibleTiles(app.screen, cameraState);
       }
     }
 
-    // --- 4. INPUT MANAGEMENT ---
-
-    /**
-      * Handles all Mouse/Keyboard events.
-      * Manipulates the Stage and Selection state.
-      */
-    class InputManager {
-      constructor(domElement, stage, state, onRequestRender) {
-        this.dom = domElement
-        this.stage = stage
-        this.state = state
-        this.requestRender = onRequestRender
-
-        // Internal Input State
-        this.isPanning = false
-        this.isDraggingItems = false
-        this.isSelectingBox = false
-        this.lastPos = { x: 0, y: 0 }
-        this.dragStart = { x: 0, y: 0 }
-        this.boxStart = { x: 0, y: 0 }
-
-        this._bindEvents()
+    // ==========================================
+    // MODULE 3: Input Controller
+    // ==========================================
+    class InputController {
+      constructor(domElement, state, renderFn) {
+        this.el = domElement;
+        this.state = state;
+        this.requestRender = renderFn;
+        
+        this._bindEvents();
       }
 
       _bindEvents() {
-        this.dom.addEventListener('mousedown', this._onDown.bind(this))
-        window.addEventListener('mousemove', this._onMove.bind(this))
-        window.addEventListener('mouseup', this._onUp.bind(this))
-        this.dom.addEventListener('wheel', this._onWheel.bind(this), { passive: false })
-        window.addEventListener('keydown', this._onKey.bind(this))
-      }
-
-      _onDown(e) {
-        e.preventDefault()
-        const worldPos = Geom.screenToWorld(e.clientX, e.clientY, this.stage)
-        this.lastPos = { x: e.clientX, y: e.clientY }
-
-        // 1. Middle Mouse / Alt: PAN
-        if (e.button === 1 || e.altKey) {
-          this.isPanning = true
-          this.dom.style.cursor = 'grabbing'
-          return
-        }
-
-        // 2. Left Mouse: SELECT or DRAG
-        // Hit Test (Reverse order for top-most check)
-        const hitImage = this.state.images
-          .slice()
-          .reverse()
-          .find((img) =>
-            Geom.rectIntersect(
-              { x: worldPos.x, y: worldPos.y, w: 0, h: 0 },
-              { x: img.x, y: img.y, w: img.fullWidth, h: img.fullHeight }
-            )
-          )
-
-        if (hitImage) {
-          const isMulti = e.metaKey || e.ctrlKey
-
-          if (!this.state.selection.has(hitImage) && !isMulti) {
-            this.state.selection.clear()
-          }
-
-          if (isMulti && this.state.selection.has(hitImage)) {
-            this.state.selection.delete(hitImage)
-          } else {
-            this.state.selection.add(hitImage)
-            this.isDraggingItems = true
-          }
-        } else {
-          // Clicked Void
-          if (!e.metaKey && !e.ctrlKey) this.state.selection.clear()
-          this.isSelectingBox = true
-          this.boxStart = { x: e.clientX, y: e.clientY }
-          this.state.selectionBox = { active: true, x: 0, y: 0, w: 0, h: 0 }
-        }
-
-        this.requestRender()
-      }
-
-      _onMove(e) {
-        if (this.isPanning) {
-          const dx = e.clientX - this.lastPos.x
-          const dy = e.clientY - this.lastPos.y
-          this.stage.x += dx
-          this.stage.y += dy
-          this.lastPos = { x: e.clientX, y: e.clientY }
-          this.requestRender()
-        } else if (this.isDraggingItems) {
-          const dx = (e.clientX - this.lastPos.x) / this.stage.scale.x
-          const dy = (e.clientY - this.lastPos.y) / this.stage.scale.y
-          this.state.selection.forEach((img) => {
-            img.x += dx
-            img.y += dy
-          })
-          this.lastPos = { x: e.clientX, y: e.clientY }
-          this.requestRender()
-        } else if (this.isSelectingBox) {
-          // Update Box Geometry
-          const rect = Geom.normalizeBox(
-            this.boxStart.x,
-            this.boxStart.y,
-            e.clientX - this.boxStart.x,
-            e.clientY - this.boxStart.y
-          )
-          // Convert to World for storage (optional, or store screen)
-          // Here we store Screen Coords for the box UI
-          this.state.selectionBox = { active: true, ...rect }
-          this.requestRender()
-        }
-      }
-
-      _onUp(e) {
-        this.isPanning = false
-        this.isDraggingItems = false
-        this.dom.style.cursor = 'default'
-
-        if (this.isSelectingBox) {
-          // Commit Box Selection
-          const sb = this.state.selectionBox
-          const p1 = Geom.screenToWorld(sb.x, sb.y, this.stage)
-          const p2 = Geom.screenToWorld(sb.x + sb.w, sb.y + sb.h, this.stage)
-          const worldBox = { x: p1.x, y: p1.y, w: p2.x - p1.x, h: p2.y - p1.y }
-
-          this.state.images.forEach((img) => {
-            if (
-              Geom.rectIntersect(worldBox, {
-                x: img.x,
-                y: img.y,
-                w: img.fullWidth,
-                h: img.fullHeight,
-              })
-            ) {
-              this.state.selection.add(img)
-            }
-          })
-
-          this.isSelectingBox = false
-          this.state.selectionBox.active = false
-          this.requestRender()
-        }
+        // [FIX]: Added 'wheel' to passive: false to prevent browser zooming
+        this.el.addEventListener('wheel', this._onWheel.bind(this), { passive: false });
+        this.el.addEventListener('mousedown', this._onMouseDown.bind(this));
+        window.addEventListener('mousemove', this._onMouseMove.bind(this));
+        window.addEventListener('mouseup', this._onMouseUp.bind(this));
+        // Prevent context menu
+        this.el.addEventListener('contextmenu', e => e.preventDefault());
       }
 
       _onWheel(e) {
-        e.preventDefault()
+        e.preventDefault();
+        const { camera } = this.state;
 
-        // Pinch-to-zoom (trackpad) or Ctrl+wheel (mouse): ZOOM
         if (e.ctrlKey) {
-          const zoomIntensity = 0.01
-          const oldScale = this.stage.scale.x
-          const newScale = oldScale * (1 - e.deltaY * zoomIntensity)
+          // Zoom
+          const zoomIntensity = 0.012;
+          const delta = -e.deltaY;
+          const newScale = Math.max(0.01, camera.scale * (1 + delta * zoomIntensity));
+          
+          const rect = this.el.getBoundingClientRect();
+          const mx = e.clientX - rect.left;
+          const my = e.clientY - rect.top;
 
-          // Clamp
-          if (newScale < 0.01 || newScale > 50) return
-
-          // Zoom toward mouse point
-          const mouseX = e.clientX
-          const mouseY = e.clientY
-          const worldPos = Geom.screenToWorld(mouseX, mouseY, this.stage)
-
-          // Apply Scale
-          this.stage.scale.set(newScale)
-
-          // Adjust Position to keep worldPos under mouse
-          this.stage.x = mouseX - worldPos.x * newScale
-          this.stage.y = mouseY - worldPos.y * newScale
+          // Pivot Zoom Math
+          camera.offsetX -= (mx - camera.offsetX) * (newScale / camera.scale - 1);
+          camera.offsetY -= (my - camera.offsetY) * (newScale / camera.scale - 1);
+          camera.scale = newScale;
         } else {
-          // Regular scroll/swipe: PAN
-          this.stage.x -= e.deltaX
-          this.stage.y -= e.deltaY
+          // Pan
+          camera.offsetX -= e.deltaX;
+          camera.offsetY -= e.deltaY;
         }
-
-        this.requestRender()
+        this.requestRender();
       }
 
-      _onKey(e) {
-        // Dispatch custom events for Vue to pick up if needed, or handle directly
-        if (e.code === 'KeyF') document.dispatchEvent(new CustomEvent('action-fit'))
-        if (e.code === 'KeyG') document.dispatchEvent(new CustomEvent('action-grid'))
+      _onMouseDown(e) {
+        const { camera, selection, input } = this.state;
+        const worldPos = MathUtils.screenToWorld(e.clientX, e.clientY, camera);
+
+        // 1. Pan Action
+        if (e.button === 1 || (e.button === 0 && e.altKey)) {
+          input.mode = 'PANNING';
+          input.startPos = { x: e.clientX, y: e.clientY };
+          return;
+        }
+
+        // 2. Left Click (Select or Drag)
+        if (e.button === 0) {
+          // Hit Test (Reverse order for Z-index)
+          let clickedImage = null;
+          for (let i = this.state.scene.images.length - 1; i >= 0; i--) {
+            if (this.state.scene.images[i].hitTest(worldPos.x, worldPos.y)) {
+              clickedImage = this.state.scene.images[i];
+              break;
+            }
+          }
+
+          if (clickedImage) {
+            this._handleImageClick(clickedImage, e);
+          } else {
+            // Clicked Empty Space -> Box Select
+            if (!e.metaKey && !e.ctrlKey) selection.active.clear();
+            input.mode = 'BOX_SELECT';
+            selection.box = { active: true, startX: e.clientX, startY: e.clientY, width: 0, height: 0 };
+          }
+          this.requestRender();
+        }
+      }
+
+      _handleImageClick(img, e) {
+        const { selection, input } = this.state;
+        const isMulti = e.metaKey || e.ctrlKey;
+        const isSelected = selection.active.has(img);
+
+        if (isMulti) {
+          isSelected ? selection.active.delete(img) : selection.active.add(img);
+        } else if (!isSelected) {
+          selection.active.clear();
+          selection.active.add(img);
+        }
+
+        input.mode = 'DRAGGING';
+        input.startPos = { x: e.clientX, y: e.clientY };
+      }
+
+      _onMouseMove(e) {
+        const { input, camera, selection } = this.state;
+        if (input.mode === 'IDLE') return;
+
+        let dirty = false;
+
+        if (input.mode === 'PANNING') {
+          camera.offsetX += e.clientX - input.startPos.x;
+          camera.offsetY += e.clientY - input.startPos.y;
+          input.startPos = { x: e.clientX, y: e.clientY };
+          dirty = true;
+        } 
+        else if (input.mode === 'DRAGGING') {
+          const dx = (e.clientX - input.startPos.x) / camera.scale;
+          const dy = (e.clientY - input.startPos.y) / camera.scale;
+          
+          selection.active.forEach(img => {
+            img.x += dx;
+            img.y += dy;
+          });
+          
+          input.startPos = { x: e.clientX, y: e.clientY };
+          dirty = true;
+        } 
+        else if (input.mode === 'BOX_SELECT') {
+          selection.box.width = e.clientX - selection.box.startX;
+          selection.box.height = e.clientY - selection.box.startY;
+          dirty = true;
+        }
+
+        if (dirty) this.requestRender();
+      }
+
+      _onMouseUp() {
+        const { input, selection, camera, scene } = this.state;
+        
+        if (input.mode === 'BOX_SELECT') {
+          this._finalizeBoxSelection();
+        }
+
+        input.mode = 'IDLE';
+        selection.box.active = false;
+        this.requestRender();
+      }
+
+      _finalizeBoxSelection() {
+        const { selection, camera, scene } = this.state;
+        const b = selection.box;
+        
+        // Normalize rect (handle negative width/height)
+        const sx = b.width > 0 ? b.startX : b.startX + b.width;
+        const sy = b.height > 0 ? b.startY : b.startY + b.height;
+        const sw = Math.abs(b.width);
+        const sh = Math.abs(b.height);
+
+        const tl = MathUtils.screenToWorld(sx, sy, camera);
+        const br = MathUtils.screenToWorld(sx + sw, sy + sh, camera);
+
+        const worldBox = { x: tl.x, y: tl.y, w: br.x - tl.x, h: br.y - tl.y };
+
+        scene.images.forEach(img => {
+          const imgBox = { x: img.x, y: img.y, w: img.width * img.scale, h: img.height * img.scale };
+          if (MathUtils.rectsIntersect(worldBox, imgBox)) {
+            selection.active.add(img);
+          }
+        });
       }
     }
 
-    // --- 5. VUE APP ROOT ---
+    // ==========================================
+    // MODULE 4: Layout Engine
+    // ==========================================
+    const LayoutEngine = {
+      arrangeGrid(images) {
+        if (images.length === 0) return;
+        const padding = 50;
+        const cols = Math.ceil(Math.sqrt(images.length));
+        const colWidths = [];
+        const rowHeights = [];
+
+        // Measure
+        images.forEach((img, i) => {
+          const c = i % cols;
+          const r = Math.floor(i / cols);
+          const w = img.width * img.scale;
+          const h = img.height * img.scale;
+          colWidths[c] = Math.max(colWidths[c] || 0, w);
+          rowHeights[r] = Math.max(rowHeights[r] || 0, h);
+        });
+
+        // Position
+        images.forEach((img, i) => {
+          const c = i % cols;
+          const r = Math.floor(i / cols);
+          let x = 0, y = 0;
+          for (let k = 0; k < c; k++) x += colWidths[k] + padding;
+          for (let k = 0; k < r; k++) y += rowHeights[k] + padding;
+          img.x = x;
+          img.y = y;
+        });
+      },
+
+      calculateFit(images, screenW, screenH) {
+         if (images.length === 0) return null;
+         let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+         
+         images.forEach(img => {
+           minX = Math.min(minX, img.x);
+           minY = Math.min(minY, img.y);
+           maxX = Math.max(maxX, img.x + img.width * img.scale);
+           maxY = Math.max(maxY, img.y + img.height * img.scale);
+         });
+
+         const w = maxX - minX;
+         const h = maxY - minY;
+         const padding = 40;
+         
+         const scale = Math.min(
+           (screenW - padding * 2) / w,
+           (screenH - padding * 2) / h
+         );
+
+         const centerX = (minX + maxX) / 2;
+         const centerY = (minY + maxY) / 2;
+
+         return {
+           scale,
+           offsetX: screenW / 2 - centerX * scale,
+           offsetY: screenH / 2 - centerY * scale
+         };
+      }
+    };
+
+    // ==========================================
+    // MODULE 5: Main Application (Vue)
+    // ==========================================
     createApp({
       setup() {
-        // -- Reactive Data (UI Only) --
-        const zoomPercentage = ref(100)
-        const loadingCount = ref(0) // TODO: Hook up to TileService
-        const selectionCount = ref(0)
-        const showContextBar = ref(false)
-        const contextBarPos = reactive({ x: 0, y: 0 })
+        // --- Structured Reactive State ---
+        const state = reactive({
+          camera: { offsetX: 0, offsetY: 0, scale: 1 },
+          input: { 
+            mode: 'IDLE', // IDLE, PANNING, DRAGGING, BOX_SELECT
+            startPos: { x: 0, y: 0 } 
+          },
+          selection: {
+            active: new Set(), // Set<DeepZoomImage>
+            box: { active: false, startX: 0, startY: 0, width: 0, height: 0 }
+          },
+          scene: {
+            images: [] // Array<DeepZoomImage>
+          }
+        });
 
-        // -- Non-Reactive Data (High Performance) --
-        // We avoid Vue proxies for the heavy PIXI objects to prevent memory leaks and lag
-        const state = {
-          app: null,
-          worldContainer: null,
-          images: [], // Array of DeepZoomSprite
-          selection: new Set(),
-          selectionBox: { active: false, x: 0, y: 0, w: 0, h: 0 },
-        }
+        // --- Pixi Setup ---
+        let app = null;
+        let inputController = null;
+        const worldContainer = new PIXI.Container();
+        const selectionGraphics = new PIXI.Graphics();
+        let renderPending = false;
 
-        const boxGraphics = new PIXI.Graphics()
-        let renderRequested = false
-
-        // -- Rendering --
-        const requestRender = () => {
-          if (!renderRequested) {
-            renderRequested = true
-            requestAnimationFrame(renderLoop)
+        // --- Render Loop ---
+        function requestRender() {
+          if (!renderPending) {
+            renderPending = true;
+            requestAnimationFrame(renderScene);
           }
         }
 
-        const renderLoop = () => {
-          renderRequested = false
-          if (!state.app) return
+        function renderScene() {
+          renderPending = false;
+          if (!app) return;
 
-          // 1. Sync Selection Visuals
-          state.images.forEach((img) => img.updateSelection(state.selection.has(img)))
+          // 1. Sync Camera
+          worldContainer.x = state.camera.offsetX;
+          worldContainer.y = state.camera.offsetY;
+          worldContainer.scale.set(state.camera.scale);
 
-          // 2. Draw Selection Box
-          boxGraphics.clear()
-          if (state.selectionBox.active) {
-            const { x, y, w, h } = state.selectionBox
-            boxGraphics.beginFill(CONFIG.COLORS.BOX_FILL, 0.2)
-            boxGraphics.lineStyle(1, CONFIG.COLORS.BOX_FILL, 0.8)
-            boxGraphics.drawRect(x, y, w, h)
-            boxGraphics.endFill()
+          // 2. Render Images
+          state.scene.images.forEach(img => img.render(app, state.camera));
+
+          // 3. Render Selection Box
+          selectionGraphics.clear();
+          if (state.selection.box.active) {
+            const { startX, startY, width, height } = state.selection.box;
+
+            // Account for 'backwards' selection
+            const x = width < 0 ? startX + width : startX
+            const y = height < 0 ? startY + height : startY
+            const w = Math.abs(width)
+            const h = Math.abs(height)
+
+            selectionGraphics.beginFill(Config.COLORS.SELECTION, 0.2);
+            selectionGraphics.lineStyle(1, Config.COLORS.SELECTION, 0.8);
+            selectionGraphics.drawRect(x, y, w, h);
+            selectionGraphics.endFill();
           }
 
-          // 3. Compute LOD for Viewport
-          // This is the "Culling" phase
-          const viewport = {
-            x: -state.worldContainer.x / state.worldContainer.scale.x,
-            y: -state.worldContainer.y / state.worldContainer.scale.y,
-            width: state.app.screen.width / state.worldContainer.scale.x,
-            height: state.app.screen.height / state.worldContainer.scale.y,
-          }
+          // 4. Update HUD Elements
+          updateContextPopup();
 
-          state.images.forEach((img) => img.cullAndLOD(viewport, state.worldContainer.scale.x))
-
-          // 4. Render
-          state.app.renderer.render(state.app.stage)
-
-          // 5. Update UI State (Vue)
-          updateUI()
+          // 5. Pixi Draw
+          app.renderer.render(app.stage);
         }
 
-        const updateUI = () => {
-          zoomPercentage.value = Math.round(state.worldContainer.scale.x * 100)
-          selectionCount.value = state.selection.size
+        // --- DOM HUD Logic ---
+        function updateContextPopup() {
+          const popup = document.getElementById('context-popup-bar');
+          if (!popup) return;
 
-          if (state.selection.size > 0) {
-            showContextBar.value = true
-            // Calculate center of selection in Screen Space
-            let minX = Infinity
-            let minY = Infinity
-            let maxX = -Infinity
-            let maxY = -Infinity
+          if (state.selection.active.size === 0) {
+            popup.classList.add('hidden');
+            return;
+          }
 
-            state.selection.forEach((img) => {
-              const tl = { x: img.x, y: img.y }
-              const br = { x: img.x + img.fullWidth, y: img.y + img.fullHeight }
-              minX = Math.min(minX, tl.x)
-              minY = Math.min(minY, tl.y)
-              maxX = Math.max(maxX, br.x)
-              maxY = Math.max(maxY, br.y)
+          // Calculate bounds of selection on screen
+          let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+          for (const img of state.selection.active) {
+             const x1 = img.x * state.camera.scale + state.camera.offsetX;
+             const y1 = img.y * state.camera.scale + state.camera.offsetY;
+             const w = img.width * img.scale * state.camera.scale;
+             const h = img.height * img.scale * state.camera.scale;
+             
+             minX = Math.min(minX, x1);
+             minY = Math.min(minY, y1);
+             maxX = Math.max(maxX, x1 + w);
+             maxY = Math.max(maxY, y1 + h);
+          }
+
+          const centerX = (minX + maxX) / 2;
+          const topY = minY;
+          
+          // Clamp logic
+          const pW = popup.offsetWidth, pH = popup.offsetHeight;
+          const pad = 12;
+          let left = Math.max(pW/2 + pad, Math.min(window.innerWidth - pW/2 - pad, centerX));
+          let top = Math.max(pad, Math.min(window.innerHeight - pH - pad, topY - pH - 10));
+
+          popup.style.left = `${left}px`;
+          popup.style.top = `${top}px`;
+          popup.classList.remove('hidden');
+        }
+
+        // --- Actions ---
+        function addImage(filename) {
+          fetch(`${Config.BASE_URL}/file/${encodeURI(filename)}`)
+            .then(res => res.json())
+            .then(metadata => {
+              const img = new DeepZoomImage(0, 0, { filename, ...metadata }, requestRender);
+              state.scene.images.push(img);
+              worldContainer.addChild(img.container);
+              requestRender();
             })
+            .catch(e => console.error(e));
+        }
 
-            const screenTopLeft = {
-              x: minX * state.worldContainer.scale.x + state.worldContainer.x,
-              y: minY * state.worldContainer.scale.y + state.worldContainer.y,
-            }
-            const w = (maxX - minX) * state.worldContainer.scale.x
+        function layoutGrid() {
+          LayoutEngine.arrangeGrid(state.scene.images);
+          fitAll();
+        }
 
-            contextBarPos.x = screenTopLeft.x + w / 2
-            contextBarPos.y = Math.max(10, screenTopLeft.y - 50)
-          } else {
-            showContextBar.value = false
+        function fitAll() {
+          const newCam = LayoutEngine.calculateFit(
+            state.scene.images, app.screen.width, app.screen.height
+          );
+          if (newCam) {
+            Object.assign(state.camera, newCam);
+            requestRender();
           }
         }
 
-        // -- Actions --
-        const addImage = async (filename) => {
-          try {
-            const res = await fetch(`${CONFIG.API_BASE}/file/${filename}`)
-            const meta = await res.json()
-            const img = new DeepZoomSprite({ filename, ...meta }, requestRender)
-
-            state.images.push(img)
-            state.worldContainer.addChild(img)
-            requestRender()
-          } catch (e) {
-            console.error('Load failed', e)
-          }
-        }
-
-        const fitAll = () => {
-          if (state.images.length === 0) return
-          // Simple bounds calculation
-          let minX = Infinity
-          let minY = Infinity
-          let maxX = -Infinity
-          let maxY = -Infinity
-
-          state.images.forEach((img) => {
-            minX = Math.min(minX, img.x)
-            maxX = Math.max(maxX, img.x + img.fullWidth)
-            minY = Math.min(minY, img.y)
-            maxY = Math.max(maxY, img.y + img.fullHeight)
-          })
-
-          const w = maxX - minX
-          const h = maxY - minY
-          const pad = 50
-
-          const scale = Math.min(
-            (state.app.screen.width - pad * 2) / w,
-            (state.app.screen.height - pad * 2) / h
-          )
-
-          state.worldContainer.scale.set(scale)
-          state.worldContainer.x = (state.app.screen.width - w * scale) / 2 - minX * scale
-          state.worldContainer.y = (state.app.screen.height - h * scale) / 2 - minY * scale
-          requestRender()
-        }
-
-        const layoutGrid = () => {
-          const cols = Math.ceil(Math.sqrt(state.images.length))
-          const pad = 50
-          let cx = 0
-          let cy = 0
-          let maxH = 0
-
-          state.images.forEach((img, i) => {
-            if (i > 0 && i % cols === 0) {
-              cx = 0
-              cy += maxH + pad
-              maxH = 0
-            }
-            img.x = cx
-            img.y = cy
-            cx += img.fullWidth + pad
-            maxH = Math.max(maxH, img.fullHeight)
-          })
-          fitAll()
-        }
-
-        // -- Lifecycle --
+        // --- Lifecycle ---
         onMounted(() => {
-          const canvasContainer = document.getElementById('app')
-
-          // Init Pixi
-          state.app = new PIXI.Application({
-            resizeTo: canvasContainer,
+          app = new PIXI.Application({
+            resizeTo: document.getElementById('app'),
             backgroundColor: 0x000000,
             antialias: true,
-            autoStart: false, // Essential for our manual render loop
-          })
-          canvasContainer.appendChild(state.app.view)
+            autoStart: false
+          });
+          document.getElementById('app').appendChild(app.view);
+          
+          // Layers
+          app.stage.addChild(worldContainer);
+          app.stage.addChild(selectionGraphics); // Draw UI on top of World
 
-          // Scene Setup
-          state.worldContainer = new PIXI.Container()
-          state.worldContainer.sortableChildren = true
-          state.app.stage.addChild(state.worldContainer)
-          state.app.stage.addChild(boxGraphics) // UI on top
+          // Initialize Input Controller
+          inputController = new InputController(app.view, state, requestRender);
 
-          // Init Input Manager
-          new InputManager(state.app.view, state.worldContainer, state, requestRender)
+          // Keyboard Shortcuts
+          window.addEventListener('keydown', e => {
+            if (e.code === 'KeyF') fitAll();
+            if (e.code === 'KeyG') layoutGrid();
+          });
+          
+          // Watchers for Selection State Visuals
+          watch(() => Array.from(state.selection.active), () => {
+             // Update "Selected" property on objects for render loop
+             state.scene.images.forEach(img => {
+                const wasSelected = img.selected;
+                img.selected = state.selection.active.has(img);
+                // Z-Index Hack: Bring selected to front of Pixi Container
+                if (img.selected && !wasSelected) {
+                  worldContainer.removeChild(img.container);
+                  worldContainer.addChild(img.container);
+                }
+             });
+             requestRender();
+          });
 
-          // Event Listeners for Buttons
-          document.addEventListener('action-fit', fitAll)
-          document.addEventListener('action-grid', layoutGrid)
+          // Bootstrap Scene
+          addImage('002_IDv3__aa855_s05_c0.tif');
+          addImage('002_IDv3__aa855_s05_c1.tif');
+          addImage('002_IDv3__aa855_s05_c2.tif');
+          addImage('002_IDv3__aa855_s05_c3.tif');
+          setTimeout(layoutGrid, 2000);
+        });
 
-          // Load Dummy Data
-          const files = [
-            '002_IDv3__aa855_s05_c0.tif',
-            '002_IDv3__aa855_s05_c1.tif',
-            '002_IDv3__aa855_s05_c2.tif',
-            '002_IDv3__aa855_s05_c3.tif',
-          ]
-          files.forEach(addImage)
-
-          // Layout delay (dirty hack, ideally wait for metadata promises)
-          setTimeout(layoutGrid, 1000)
-        })
-
+        // Expose to Template
         return {
-          zoomPercentage,
-          loadingCount,
-          selectionCount,
-          showContextBar,
-          contextBarPos,
-          fitAll,
+          ...toRefs(state),
           layoutGrid,
-        }
-      },
-    }).mount('#app')
+          fitAll
+        };
+      }
+    }).mount('#app');
   </script>
 </body>
 </html>

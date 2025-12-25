@@ -39,8 +39,6 @@
     </viewport-hud>
   </div>
 
-  <!-- <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script> -->
-  <!-- <script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.3.2/pixi.min.js"></script> -->
   <script src="/assets/js/vue.min.js"></script>
   <script src="/assets/js/pixi.min.js"></script>
 
@@ -61,7 +59,7 @@
       }
     };
 
-    const MathUtils = {
+    const Utils = {
       /** Axis-Aligned Bounding Box intersection */
       rectsIntersect(r1, r2) {
         return !(r2.x > r1.x + r1.w || 
@@ -78,37 +76,119 @@
         };
       },
       
-      /** * 16-bit array to Texture conversion.
-       * [OPTIMIZATION]: This creates a new Canvas/Context for every single tile fetch.
-       * For high-throughput apps, use a WebGL shader to render Uint16 directly,
-       * or use an OffscreenCanvas pool to reduce GC overhead.
+      /**
+       * 16-bit array to Texture conversion.
        */
       uint16ToTexture(uint16Data, width, height) {
-        const bufferCanvas = document.createElement('canvas');
-        bufferCanvas.width = width;
-        bufferCanvas.height = height;
-        const ctx = bufferCanvas.getContext('2d');
-        const imageData = ctx.createImageData(width, height);
-        const rgba = imageData.data;
-
-        // [FIX]: Hardcoded normalization range (0-4000). 
-        // Ideally, this should come from image metadata (histogram).
-        let min = 0, max = 4000;
-        const range = max - min || 1;
-
+        // Convert Uint16 (0-65535) to Float32 (0.0-1.0)
+        const float32Data = new Float32Array(uint16Data.length);
         for (let i = 0; i < uint16Data.length; i++) {
-          const val = Math.floor(((uint16Data[i] - min) / range) * 255);
-          const idx = i * 4;
-          rgba[idx] = val;     // R
-          rgba[idx + 1] = val; // G
-          rgba[idx + 2] = val; // B
-          rgba[idx + 3] = 255; // Alpha
+          float32Data[i] = uint16Data[i] / 65535;
         }
 
-        ctx.putImageData(imageData, 0, 0);
-        return PIXI.Texture.from(bufferCanvas);
-      }
+        // Create a Pixi Buffer Resource
+        const resource = new PIXI.BufferResource(float32Data, {
+          width: width,
+          height: height,
+        });
+
+        // Create BaseTexture using Float format
+        // FORMATS.RED ensures we treat it as single channel
+        const baseTex = new PIXI.BaseTexture(resource, {
+          format: PIXI.FORMATS.RED, 
+          type: PIXI.TYPES.FLOAT,
+          scaleMode: PIXI.SCALE_MODES.NEAREST // or LINEAR based on preference
+        });
+
+        return new PIXI.Texture(baseTex);
+      },
+
+      /**
+       *  Factory for creating the colormaps once
+       */
+      createColormapTexture: (name) => {
+        const canvas = document.createElement('canvas');
+        canvas.width = 256;
+        canvas.height = 1;
+        const ctx = canvas.getContext('2d');
+        
+        // Create gradient
+        const grad = ctx.createLinearGradient(0, 0, 256, 0);
+        
+        if (name === 'viridis') {
+          // Simplified Viridis-ish approximation
+          grad.addColorStop(0.0, '#440154');
+          grad.addColorStop(0.25, '#3b528b');
+          grad.addColorStop(0.5, '#21918c');
+          grad.addColorStop(0.75, '#5ec962');
+          grad.addColorStop(1.0, '#fde725');
+        } else if (name === 'grayscale') {
+          grad.addColorStop(0, '#000000');
+          grad.addColorStop(1, '#ffffff');
+        }
+        
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, 256, 1);
+        
+        // Create texture. 
+        // IMPORTANT: nearest neighbor is usually better for LUTs to avoid color bleeding,
+        // but linear is fine for smooth gradients.
+        const tex = PIXI.Texture.from(canvas);
+        tex.baseTexture.wrapMode = PIXI.WRAP_MODES.CLAMP;
+        return tex;
+      },
     };
+
+    const TileShader = {
+      // Standard Pixi vertex shader
+      vert: `
+        precision mediump float;
+        attribute vec2 aVertexPosition;
+        attribute vec2 aTextureCoord;
+        uniform mat3 projectionMatrix;
+        uniform mat3 translationMatrix;
+        uniform mat3 uTransformMatrix;
+        varying vec2 vTextureCoord;
+        
+        void main(void) {
+            gl_Position = vec4((projectionMatrix * translationMatrix * vec3(aVertexPosition, 1.0)).xy, 0.0, 1.0);
+            vTextureCoord = aTextureCoord;
+        }`,
+
+      // Custom microscopy logic
+      frag: `
+        precision mediump float;
+        varying vec2 vTextureCoord;
+        
+        uniform sampler2D uSampler;     // The raw image tile
+        uniform sampler2D uColormap;    // The color gradient (LUT)
+        
+        uniform float uMin;             // Black point (0.0 to 1.0)
+        uniform float uMax;             // White point (0.0 to 1.0)
+        uniform float uGamma;           // Gamma correction
+        uniform float uOpacity;         // Global opacity
+        
+        void main(void) {
+            // 1. Sample raw intensity (assumes texture is Red channel or Luminance)
+            float intensity = texture2D(uSampler, vTextureCoord).r;
+            
+            // 2. Normalize based on Min/Max (Contrast Stretching)
+            // Avoid division by zero
+            float range = max(uMax - uMin, 0.00001);
+            float normalized = clamp((intensity - uMin) / range, 0.0, 1.0);
+            
+            // 3. Apply Gamma
+            // Power function: pixel = pixel ^ (1 / gamma)
+            normalized = pow(normalized, 1.0 / uGamma);
+            
+            // 4. Color Mapping
+            // Look up the color in the LUT based on the normalized intensity
+            vec4 color = texture2D(uColormap, vec2(normalized, 0.5));
+            
+            // 5. Output
+            gl_FragColor = vec4(color.rgb, color.a * uOpacity);
+        }`
+    }
 
     // ==========================================
     // MODULE 2: Core Domain Logic
@@ -128,7 +208,17 @@
         this.scale = 1;
         this.selected = false;
         this.metadata = metadata;
-        
+
+        // Shader State
+        this.uniforms = {
+          uMin: 0.0,          // 0 = 0 intensity
+          uMax: 4000 / 65535,          // 1 = 65535 intensity
+          uGamma: 1.0,
+          uOpacity: 1.0,
+          uColormap: Utils.createColormapTexture('grayscale'), 
+          uSampler: PIXI.Texture.WHITE // Placeholder
+        };
+
         // Dependencies
         this.onRequestRender = onRequestRender;
 
@@ -137,6 +227,13 @@
         
         // Visuals (Pixi)
         this.container = new PIXI.Container();
+        this.geometry = new PIXI.Geometry()
+          .addAttribute('aVertexPosition', [0, 0, 1, 0, 1, 1, 0, 1], 2)
+          .addAttribute('aTextureCoord', [0, 0, 1, 0, 1, 1, 0, 1], 2)
+          .addIndex([0, 1, 2, 0, 2, 3]);
+
+        this.program = PIXI.Program.from(TileShader.vert, TileShader.frag)
+
         this._initVisuals();
       }
 
@@ -220,10 +317,10 @@
           }
         }
 
-        // 4. Cleanup invisible sprites
+        // 4. Cleanup invisible meshes
         for (const [key, data] of this.tiles.entries()) {
-          if (!newVisibleKeys.has(key) && data.sprite) {
-            data.sprite.visible = false;
+          if (!newVisibleKeys.has(key) && data.mesh) {
+            data.mesh.visible = false;
           }
         }
       }
@@ -233,30 +330,46 @@
 
         if (!cached) {
           if (shouldFetch) {
-            this.tiles.set(key, { loading: true, sprite: null, texture: null, level: tile.level });
+            this.tiles.set(key, { loading: true, mesh: null, texture: null, level: tile.level });
             this._fetchTile(tile, key);
           }
           return;
         }
 
-        // Lazy Sprite Creation
-        if (cached.texture && !cached.sprite) {
-          const sprite = new PIXI.Sprite(cached.texture);
-          this.tileContainer.addChild(sprite);
-          cached.sprite = sprite;
+        // Lazy Mesh Creation
+        if (cached.texture && !cached.mesh) {
+          // 1. Create specific shader for this tile
+          // We clone uniforms so we can set the specific uSampler for this tile
+          const tileUniforms = { ...this.uniforms, uSampler: cached.texture };
+          
+          const shader = new PIXI.Shader(this.program, tileUniforms);
+          
+          // 2. Create Mesh
+          const mesh = new PIXI.Mesh(this.geometry, shader);
+          
+          // 3. Store reference
+          this.tileContainer.addChild(mesh);
+          cached.mesh = mesh; 
         }
 
-        // Update Sprite
-        if (cached.sprite) {
-          cached.sprite.visible = true;
-          cached.sprite.x = tile.tx * tile.effectiveTileSize;
-          cached.sprite.y = tile.ty * tile.effectiveTileSize;
+        // Update Mesh Transform
+        if (cached.mesh) {
+          cached.mesh.visible = true;
+          cached.mesh.x = tile.tx * tile.effectiveTileSize;
+          cached.mesh.y = tile.ty * tile.effectiveTileSize;
           
           const scaleFactor = Math.pow(2, tile.level);
-          cached.sprite.width = tile.tileWidth * scaleFactor;
-          cached.sprite.height = tile.tileHeight * scaleFactor;
-          // [FIX] Ensure proper Z-ordering (High res on top)
-          cached.sprite.zIndex = Config.MAX_ZOOM - tile.level;
+          cached.mesh.scale.set(tile.tileWidth * scaleFactor, tile.tileHeight * scaleFactor);
+          cached.mesh.zIndex = Config.MAX_ZOOM - tile.level;
+          
+          // IMPORTANT: Keep uniforms in sync if they changed globally
+          // The uSampler must remain the specific texture for this tile, 
+          // but settings like uMin/uMax must mirror the global state.
+          cached.mesh.shader.uniforms.uMin = this.uniforms.uMin;
+          cached.mesh.shader.uniforms.uMax = this.uniforms.uMax;
+          cached.mesh.shader.uniforms.uGamma = this.uniforms.uGamma;
+          cached.mesh.shader.uniforms.uOpacity = this.uniforms.uOpacity;
+          cached.mesh.shader.uniforms.uColormap = this.uniforms.uColormap;
         }
       }
 
@@ -271,7 +384,7 @@
             if (!cached) return;
 
             const uint16Data = new Uint16Array(buffer);
-            const texture = MathUtils.uint16ToTexture(uint16Data, tile.tileWidth, tile.tileHeight);
+            const texture = Utils.uint16ToTexture(uint16Data, tile.tileWidth, tile.tileHeight);
             
             cached.texture = texture;
             cached.loading = false;
@@ -285,6 +398,28 @@
             this.tiles.delete(key); // Retry later
             console.warn("Tile fetch failed", err);
           });
+      }
+
+      updateDisplaySettings(settings) {
+        // Settings: { min, max, gamma, opacity, colormapName }
+        if (settings.min !== undefined) this.uniforms.uMin = settings.min / 65535; // Normalize
+        if (settings.max !== undefined) this.uniforms.uMax = settings.max / 65535; // Normalize
+        if (settings.gamma !== undefined) this.uniforms.uGamma = settings.gamma;
+        if (settings.opacity !== undefined) {
+          this.uniforms.uOpacity = settings.opacity;
+          this.container.alpha = settings.opacity; // Optional: helps with culling
+        }
+        if (settings.colormap) {
+          this.uniforms.uColormap = Utils.createColormapTexture(settings.colormap);
+        }
+
+        if (settings.blending === 'additive') {
+          this.tileContainer.blendMode = PIXI.BLEND_MODES.ADD;
+        } else {
+          this.tileContainer.blendMode = PIXI.BLEND_MODES.NORMAL;
+        }
+
+        this.onRequestRender();
       }
 
       /** Main Update Loop for this object */
@@ -368,7 +503,7 @@
 
       _onMouseDown(e) {
         const { camera, selection, input } = this.state;
-        const worldPos = MathUtils.screenToWorld(e.clientX, e.clientY, camera);
+        const worldPos = Utils.screenToWorld(e.clientX, e.clientY, camera);
 
         // 1. Pan Action
         if (e.button === 1 || (e.button === 0 && e.altKey)) {
@@ -471,14 +606,14 @@
         const sw = Math.abs(b.width);
         const sh = Math.abs(b.height);
 
-        const tl = MathUtils.screenToWorld(sx, sy, camera);
-        const br = MathUtils.screenToWorld(sx + sw, sy + sh, camera);
+        const tl = Utils.screenToWorld(sx, sy, camera);
+        const br = Utils.screenToWorld(sx + sw, sy + sh, camera);
 
         const worldBox = { x: tl.x, y: tl.y, w: br.x - tl.x, h: br.y - tl.y };
 
         scene.images.forEach(img => {
           const imgBox = { x: img.x, y: img.y, w: img.width * img.scale, h: img.height * img.scale };
-          if (MathUtils.rectsIntersect(worldBox, imgBox)) {
+          if (Utils.rectsIntersect(worldBox, imgBox)) {
             selection.active.add(img);
           }
         });

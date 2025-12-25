@@ -215,7 +215,7 @@
           uMax: 4000 / 65535,          // 1 = 65535 intensity
           uGamma: 1.0,
           uOpacity: 1.0,
-          uColormap: Utils.createColormapTexture('grayscale'), 
+          uColormap: Utils.createColormapTexture('viridis'), 
           uSampler: PIXI.Texture.WHITE // Placeholder
         };
 
@@ -483,7 +483,7 @@
           // Zoom
           const zoomIntensity = 0.012;
           const delta = -e.deltaY;
-          const newScale = Math.max(0.01, camera.scale * (1 + delta * zoomIntensity));
+          const newScale = Math.min(4.0, Math.max(0.01, camera.scale * (1 + delta * zoomIntensity)))
           
           const rect = this.el.getBoundingClientRect();
           const mx = e.clientX - rect.left;

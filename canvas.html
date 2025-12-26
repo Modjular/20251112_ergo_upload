@@ -59,6 +59,8 @@
       }
     };
 
+    const colormapCache = new Map();
+
     const Utils = {
       /** Axis-Aligned Bounding Box intersection */
       rectsIntersect(r1, r2) {
@@ -107,34 +109,93 @@
        *  Factory for creating the colormaps once
        */
       createColormapTexture: (name) => {
+        if (colormapCache.has(name)) return colormapCache.get(name)
+
         const canvas = document.createElement('canvas');
         canvas.width = 256;
         canvas.height = 1;
         const ctx = canvas.getContext('2d');
         
-        // Create gradient
         const grad = ctx.createLinearGradient(0, 0, 256, 0);
-        
-        if (name === 'viridis') {
-          // Simplified Viridis-ish approximation
-          grad.addColorStop(0.0, '#440154');
-          grad.addColorStop(0.25, '#3b528b');
-          grad.addColorStop(0.5, '#21918c');
-          grad.addColorStop(0.75, '#5ec962');
-          grad.addColorStop(1.0, '#fde725');
-        } else if (name === 'grayscale') {
-          grad.addColorStop(0, '#000000');
-          grad.addColorStop(1, '#ffffff');
+
+        // We use approximate stops for the complex scientific colormaps
+        switch (name) {
+          // --- Perceptually Uniform Sequential ---
+          case 'viridis':
+            grad.addColorStop(0.0, '#440154');
+            grad.addColorStop(0.25, '#3b528b');
+            grad.addColorStop(0.5, '#21918c');
+            grad.addColorStop(0.75, '#5ec962');
+            grad.addColorStop(1.0, '#fde725');
+            break;
+
+          case 'inferno':
+            grad.addColorStop(0.0, '#000004');
+            grad.addColorStop(0.25, '#420a68');
+            grad.addColorStop(0.5, '#932667');
+            grad.addColorStop(0.75, '#dd513a');
+            grad.addColorStop(1.0, '#fca50a');
+            break;
+
+          case 'turbo':
+            // Turbo is complex; these stops approximate the rainbow-ish arc
+            grad.addColorStop(0.0, '#30123b');
+            grad.addColorStop(0.2, '#28bceb'); // Light Blue
+            grad.addColorStop(0.4, '#a4fc3c'); // Greenish
+            grad.addColorStop(0.6, '#fb8022'); // Orange
+            grad.addColorStop(0.8, '#c42803'); // Red
+            grad.addColorStop(1.0, '#7a0403'); // Deep Red
+            break;
+
+          // --- Simple Linear (Black -> Color) ---
+          case 'gray':
+            grad.addColorStop(0, '#000000');
+            grad.addColorStop(1, '#ffffff');
+            break;
+          case 'red':
+            grad.addColorStop(0, '#000000');
+            grad.addColorStop(1, '#ff0000');
+            break;
+          case 'green':
+            grad.addColorStop(0, '#000000');
+            grad.addColorStop(1, '#00ff00');
+            break;
+          case 'blue':
+            grad.addColorStop(0, '#000000');
+            grad.addColorStop(1, '#0000ff');
+            break;
+          case 'cyan':
+            grad.addColorStop(0, '#000000');
+            grad.addColorStop(1, '#00ffff');
+            break;
+          case 'magenta':
+            grad.addColorStop(0, '#000000');
+            grad.addColorStop(1, '#ff00ff');
+            break;
+          case 'yellow':
+            grad.addColorStop(0, '#000000');
+            grad.addColorStop(1, '#ffff00');
+            break;
+
+          default:
+            console.warn(`Colormap '${name}' not found, defaulting to grayscale.`);
+            grad.addColorStop(0, '#000000');
+            grad.addColorStop(1, '#ffffff');
         }
         
         ctx.fillStyle = grad;
         ctx.fillRect(0, 0, 256, 1);
         
-        // Create texture. 
-        // IMPORTANT: nearest neighbor is usually better for LUTs to avoid color bleeding,
-        // but linear is fine for smooth gradients.
         const tex = PIXI.Texture.from(canvas);
+        
+        // LUT settings
         tex.baseTexture.wrapMode = PIXI.WRAP_MODES.CLAMP;
+        // Ensure smooth gradients when sampling between pixels
+        tex.baseTexture.scaleMode = PIXI.SCALE_MODES.LINEAR; 
+
+        // 4. Save to Cache
+        colormapCache.set(name, tex);
+
         return tex;
       },
     };

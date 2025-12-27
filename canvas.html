@@ -40,7 +40,34 @@
 
       <!-- Context Popup bar -->
       <div id="context-popup-bar" class="context-popup-bar hidden">
-        <button id="popup-action-btn">Action</button>
+        <div class="control-row">
+          <label>Opacity:</label>
+          <input type="range" v-model="settings.opacity" id="opacity-slider" min="0" max="1" step="0.1" value="1" @input="updateSelection()">
+          <span id="opacity-value">{{ settings.opacity }}</span>
+        </div>
+        <div class="control-row">
+          <label>Min:</label>
+          <input v-model="settings.min" type="number" id="min-input" min="0" max="65535" value="0" @change="updateSelection()">
+        </div>
+        <div class="control-row">
+          <label>Max:</label>
+          <input v-model="settings.max" type="number" id="max-input" min="0" max="65535" value="4000" @change="updateSelection()">
+        </div>
+        <div class="control-row">
+          <label>Colormap:</label>
+          <select v-model="settings.colormap" id="colormap-select" @change="updateSelection()">
+            <option value="red">🔴 Red</option>
+            <option value="green">🟢 Green</option>
+            <option value="blue">🔵 Blue</option>
+            <option value="cyan">🩵 Cyan</option>
+            <option value="magenta">🩷 Magenta</option>
+            <option value="yellow">💛 Yellow</option>
+            <option value="viridis">🌿 Viridis</option>
+            <option value="inferno">🔥 Inferno</option>
+            <option value="turbo">🌈 Turbo</option>
+            <option value="gray">⚪ Grayscale</option>
+          </select>
+        </div>
       </div>
     </viewport-hud>
   </div>
@@ -49,7 +76,7 @@
   <script src="/assets/js/pixi.min.js"></script>
 
   <script>
-    const { createApp, onMounted, reactive, watch, toRefs } = Vue;
+    const { createApp, onMounted, ref, reactive, computed, watch, toRefs } = Vue;
 
     // ==========================================
     // MODULE 1: Constants & Utilities
@@ -276,13 +303,20 @@
         this.selected = false;
         this.metadata = metadata;
 
+        // Display Settings
+        this.min = 0.0
+        this.max = 4000.0
+        this.gamma = 1.0
+        this.opacity = 0.77
+        this.colormap = 'inferno'
+
         // Shader State
         this.uniforms = {
-          uMin: 0.0,          // 0 = 0 intensity
-          uMax: 4000 / 65535,          // 1 = 65535 intensity
-          uGamma: 1.0,
-          uOpacity: 1.0,
-          uColormap: Utils.createColormapTexture('viridis'), 
+          uMin: this.min / 65535,
+          uMax: this.max / 65535,
+          uGamma: this.gamma,
+          uOpacity: this.opacity,
+          uColormap: Utils.createColormapTexture(this.colormap), 
           uSampler: PIXI.Texture.WHITE // Placeholder
         };
 
@@ -480,11 +514,20 @@
           this.uniforms.uColormap = Utils.createColormapTexture(settings.colormap);
         }
 
-        if (settings.blending === 'additive') {
-          this.tileContainer.blendMode = PIXI.BLEND_MODES.ADD;
-        } else {
-          this.tileContainer.blendMode = PIXI.BLEND_MODES.NORMAL;
-        }
+        // if (settings.blending === 'additive') {
+        //   this.tileContainer.blendMode = PIXI.BLEND_MODES.ADD;
+        // } else {
+        //   this.tileContainer.blendMode = PIXI.BLEND_MODES.NORMAL;
+        // }
+
+        // TODO: Update every tile in the cache
+        this.tiles.forEach(({ mesh }) => {
+          mesh.shader.uniforms.uMin = this.uniforms.uMin;
+          mesh.shader.uniforms.uMax = this.uniforms.uMax;
+          mesh.shader.uniforms.uGamma = this.uniforms.uGamma;
+          mesh.shader.uniforms.uOpacity = this.uniforms.uOpacity;
+          mesh.shader.uniforms.uColormap = this.uniforms.uColormap;
+        })
 
         this.onRequestRender();
       }
@@ -772,11 +815,20 @@
           }
         });
 
+        const settings = ref({
+          min: 0,
+          max: 1,
+          gamma: 1.0,
+          opacity: 1.0,
+          colormap: 'gray',
+        })
+
         // --- Pixi Setup ---
         let app = null;
         let inputController = null;
         const worldContainer = new PIXI.Container();
         const selectionGraphics = new PIXI.Graphics();
+        const gridGraphics = new PIXI.Graphics();
         let renderPending = false;
 
         // --- Render Loop ---
@@ -797,7 +849,7 @@
           worldContainer.scale.set(state.camera.scale);
 
           // 1b. Update Grid Position for Pan Visual
-          updateGrid();
+          // updateGrid();
 
           // 2. Render Images
           state.scene.images.forEach(img => img.render(app, state.camera));
@@ -948,6 +1000,12 @@
           }
         }
 
+        function updateSelection() {
+          state.selection.active.forEach((img) => {
+            img.updateDisplaySettings(settings.value)
+          })
+        }
+
         // --- Lifecycle ---
         onMounted(() => {
           app = new PIXI.Application({
@@ -974,24 +1032,33 @@
           
           // Watchers for Selection State Visuals
           watch(() => Array.from(state.selection.active), () => {
-             // Update "Selected" property on objects for render loop
-             state.scene.images.forEach(img => {
-                const wasSelected = img.selected;
-                img.selected = state.selection.active.has(img);
-                // Z-Index Hack: Bring selected to front of Pixi Container
-                if (img.selected && !wasSelected) {
-                  worldContainer.removeChild(img.container);
-                  worldContainer.addChild(img.container);
-                }
-             });
-             requestRender();
+            // Update "Selected" property on objects for render loop
+            state.scene.images.forEach(img => {
+              const wasSelected = img.selected;
+              img.selected = state.selection.active.has(img);
+              // Z-Index Hack: Bring selected to front of Pixi Container
+              if (img.selected && !wasSelected) {
+                worldContainer.removeChild(img.container);
+                worldContainer.addChild(img.container);
+              }
+            });
+            requestRender();
+
+            // When selection changes, the popup also needs to change
+            if (state.selection.active.size > 0) {
+              const [first] = state.selection.active
+              settings.value.max = first.max
+              settings.value.gamma = first.gamma
+              settings.value.opacity = first.opacity
+              settings.value.colormap = first.colormap
+            }
           });
 
           // Bootstrap Scene
           addImage('002_IDv3__aa855_s05_c0.tif');
-          addImage('002_IDv3__aa855_s05_c1.tif');
-          addImage('002_IDv3__aa855_s05_c2.tif');
-          addImage('002_IDv3__aa855_s05_c3.tif');
+          // addImage('002_IDv3__aa855_s05_c1.tif');
+          // addImage('002_IDv3__aa855_s05_c2.tif');
+          // addImage('002_IDv3__aa855_s05_c3.tif');
           setTimeout(layoutGrid, 2000);
         });
 
@@ -999,7 +1066,9 @@
         return {
           ...toRefs(state),
           layoutGrid,
-          fitAll
+          fitAll,
+          settings,
+          updateSelection,
         };
       }
     }).mount('#app');

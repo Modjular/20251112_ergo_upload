@@ -42,19 +42,20 @@
       <div id="context-popup-bar" class="context-popup-bar hidden">
         <div class="control-row">
           <label>Opacity:</label>
-          <input type="range" v-model="settings.opacity" id="opacity-slider" min="0" max="1" step="0.1" value="1" @input="updateSelection()">
+          <input v-model="settings.opacity" type="range" id="opacity-slider" min="0" max="1" step="0.02" value="1" @input="updateSelection()">
           <span id="opacity-value">{{ settings.opacity }}</span>
         </div>
         <div class="control-row">
           <label>Min:</label>
           <input v-model="settings.min" type="number" id="min-input" min="0" max="65535" value="0" @change="updateSelection()">
+          <span>{{ settings.min }}</span>
         </div>
         <div class="control-row">
           <label>Max:</label>
-          <input v-model="settings.max" type="number" id="max-input" min="0" max="65535" value="4000" @change="updateSelection()">
+          <input v-model="settings.max" type="range" id="max-input" min="0" max="65535" value="4000" @input="updateSelection()">
         </div>
         <div class="control-row">
-          <label>Colormap:</label>
+          <!-- <label>Colormap:</label> -->
           <select v-model="settings.colormap" id="colormap-select" @change="updateSelection()">
             <option value="red">🔴 Red</option>
             <option value="green">🟢 Green</option>
@@ -132,7 +133,7 @@
         const baseTex = new PIXI.BaseTexture(resource, {
           format: PIXI.FORMATS.RED, 
           type: PIXI.TYPES.FLOAT,
-          scaleMode: PIXI.SCALE_MODES.NEAREST // or LINEAR based on preference
+          scaleMode: PIXI.SCALE_MODES.LINEAR // NEAREST for pixel perfect
         });
 
         return new PIXI.Texture(baseTex);
@@ -308,7 +309,8 @@
         this.max = 4000.0
         this.gamma = 1.0
         this.opacity = 0.77
-        this.colormap = 'inferno'
+        this.colormap = 'gray'
+        this.blending = 'translucent'
 
         // Shader State
         this.uniforms = {
@@ -339,7 +341,6 @@
       }
 
       _initVisuals() {
-        this.bgGraphics = new PIXI.Graphics();
         this.tileContainer = new PIXI.Container();
         this.tileContainer.sortableChildren = true; // Essential for LOD stacking
         this.overlayGraphics = new PIXI.Graphics();
@@ -349,7 +350,10 @@
         });
         this.overlayGraphics.addChild(this.textLabel);
 
-        this.container.addChild(this.bgGraphics, this.tileContainer, this.overlayGraphics);
+        this.container.addChild(
+          this.tileContainer,
+          this.overlayGraphics,
+        );
       }
 
       /** Checks if point is inside this image (World Coords) */
@@ -489,7 +493,6 @@
             
             cached.texture = texture;
             cached.loading = false;
-            cached.texture.baseTexture.scaleMode = PIXI.SCALE_MODES.NEAREST;
             
             // Sync immediately, but don't fetch again
             this._syncTileSprite(tile, key, false);
@@ -508,26 +511,27 @@
         if (settings.gamma !== undefined) this.uniforms.uGamma = settings.gamma;
         if (settings.opacity !== undefined) {
           this.uniforms.uOpacity = settings.opacity;
-          this.container.alpha = settings.opacity; // Optional: helps with culling
+          // this.container.alpha = settings.opacity; // Optional: helps with culling
         }
         if (settings.colormap) {
           this.uniforms.uColormap = Utils.createColormapTexture(settings.colormap);
         }
 
-        // if (settings.blending === 'additive') {
-        //   this.tileContainer.blendMode = PIXI.BLEND_MODES.ADD;
-        // } else {
-        //   this.tileContainer.blendMode = PIXI.BLEND_MODES.NORMAL;
-        // }
+        if (settings.blending === 'additive') {
+          this.tileContainer.blendMode = PIXI.BLEND_MODES.ADD;
+        } else {
+          this.tileContainer.blendMode = PIXI.BLEND_MODES.NORMAL;
+        }
 
-        // TODO: Update every tile in the cache
-        this.tiles.forEach(({ mesh }) => {
-          mesh.shader.uniforms.uMin = this.uniforms.uMin;
-          mesh.shader.uniforms.uMax = this.uniforms.uMax;
-          mesh.shader.uniforms.uGamma = this.uniforms.uGamma;
-          mesh.shader.uniforms.uOpacity = this.uniforms.uOpacity;
-          mesh.shader.uniforms.uColormap = this.uniforms.uColormap;
-        })
+        // TODO Ideally we have a single source of truth that the uniforms react to, because this
+        // double updating feels redundant
+        this.min = settings.min
+        this.max = settings.max
+        this.gamma = settings.gamma
+        this.opacity = settings.opacity
+        this.colormap = settings.colormap
+        this.blending = settings.blending
+
 
         this.onRequestRender();
       }
@@ -539,11 +543,6 @@
         this.container.y = this.y;
         this.container.scale.set(this.scale);
 
-        // Update UI Overlays
-        this.bgGraphics.clear();
-        this.bgGraphics.beginFill(Config.COLORS.BG, 0.3);
-        this.bgGraphics.drawRect(0, 0, this.width, this.height);
-        this.bgGraphics.endFill();
 
         this.overlayGraphics.clear();
         if (this.selected) {
@@ -821,6 +820,7 @@
           gamma: 1.0,
           opacity: 1.0,
           colormap: 'gray',
+          blending: 'translucent',
         })
 
         // --- Pixi Setup ---
@@ -1056,10 +1056,10 @@
 
           // Bootstrap Scene
           addImage('002_IDv3__aa855_s05_c0.tif');
-          // addImage('002_IDv3__aa855_s05_c1.tif');
+          addImage('002_IDv3__aa855_s05_c1.tif');
           // addImage('002_IDv3__aa855_s05_c2.tif');
           // addImage('002_IDv3__aa855_s05_c3.tif');
-          setTimeout(layoutGrid, 2000);
+          setTimeout(layoutGrid, 1000);
         });
 
         // Expose to Template

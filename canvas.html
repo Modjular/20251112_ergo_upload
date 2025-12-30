@@ -267,8 +267,7 @@
             // 1. Sample raw intensity (assumes texture is Red channel or Luminance)
             float intensity = texture2D(uSampler, vTextureCoord).r;
             
-            // 2. Normalize based on Min/Max (Contrast Stretching)
-            // Avoid division by zero
+            // 2. Normalize (Contrast Stretching)
             float range = max(uMax - uMin, 0.00001);
             float normalized = clamp((intensity - uMin) / range, 0.0, 1.0);
             
@@ -277,11 +276,14 @@
             normalized = pow(normalized, 1.0 / uGamma);
             
             // 4. Color Mapping
-            // Look up the color in the LUT based on the normalized intensity
             vec4 color = texture2D(uColormap, vec2(normalized, 0.5));
             
-            // 5. Output
-            gl_FragColor = vec4(color.rgb, color.a * uOpacity);
+            // 5. Calculate the final alpha
+            float alpha = color.a * uOpacity;
+            
+            // Premultiply the RGB channels by the alpha
+            // This ensures that when alpha is 0, RGB is also 0
+            gl_FragColor = vec4(color.rgb * alpha, alpha);
         }`
     }
 
